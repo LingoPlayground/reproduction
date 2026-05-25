@@ -197,8 +197,7 @@ def build_original_storyboard_map(
     unique_matched = sum(1 for v in unique_texts.values() if v and v[0])
     print(f"Original→node mapping: {unique_matched}/{unique} unique (dialogue+scene) mapped ({matched}/{len(original_lines)} lines)")
 
-    # Post-processing: very short names/calls (≤10 chars after strip) inherit
-    # the node from surrounding lines in the same shot
+    # Post-processing: unmapped lines inherit node from mapped lines in the SAME shot
     fixed = 0
     for i, line in enumerate(original_lines):
         lid = line["line_id"]
@@ -206,10 +205,31 @@ def build_original_storyboard_map(
         if not entry or entry[0] is not None:
             continue
         dialogue = line["original"].strip()
-        if len(dialogue) > 10:
-            continue
         shot = line.get("shot_number")
-        # Find nearest mapped line in the same shot
+        # Short names (≤10 chars): inherit from any neighbor
+        # Longer lines: only inherit if all lines in this shot share the same node
+        if len(dialogue) > 10:
+            # Check if all mapped lines in this shot share the same node
+            shot_nodes = set()
+            for l2 in original_lines:
+                if l2.get("shot_number") != shot: continue
+                e2 = result.get(l2["line_id"], (None, None))
+                if e2 and e2[0]:
+                    shot_nodes.add(e2[0].get("nodeKey", ""))
+            if len(shot_nodes) == 1 and shot_nodes:
+                shot_node = None
+                for l2 in original_lines:
+                    if l2.get("shot_number") == shot:
+                        e2 = result.get(l2["line_id"], (None, None))
+                        if e2 and e2[0]:
+                            shot_node = e2[0]; break
+                if shot_node:
+                    result[lid] = (shot_node, 90)
+                    fixed += 1
+                continue
+            else:
+                continue
+        # Short name inheritance (≤10 chars)
         for offset in [1, -1, 2, -2, 3, -3]:
             ni = i + offset
             if 0 <= ni < len(original_lines) and original_lines[ni].get("shot_number") == shot:
@@ -219,7 +239,7 @@ def build_original_storyboard_map(
                     fixed += 1
                     break
     if fixed:
-        print(f"  → {fixed} short-name lines inherited node from neighbors")
+        print(f"  → {fixed} lines inherited node from same-shot neighbors")
 
     return result
 
@@ -464,10 +484,24 @@ def node_summary(v: dict) -> str:
     import re as _re
     quotes = _re.findall(r'"([^"]{3,60})"', p)
     quote_str = " | ".join(q[:60] for q in quotes[:3])
-    summary = p[:200].replace("\n", " ")
+
+    # Skip common style prefixes to show actual scene content
+    scene_start = 0
+    for keyword in ["场景", "镜头", "情节", "画面", "故事"]:
+        idx = p.find(keyword)
+        if 0 < idx < 200:
+            scene_start = idx
+            break
+
+    head = p[scene_start:scene_start + 200].replace("\n", " ")
+    mid = p[len(p)//2 : len(p)//2 + 150].replace("\n", " ") if len(p) > 400 else ""
+
+    parts = [f"{v['name']} | {head}"]
+    if mid:
+        parts.append(f"...{mid}")
     if quote_str:
-        summary += f" [台词: {quote_str}]"
-    return f"{v['name']} | {summary}"
+        parts.append(f"[台词: {quote_str}]")
+    return " | ".join(parts)
 
 
 def llm_match_unmapped(
@@ -480,7 +514,8 @@ def llm_match_unmapped(
 
     node_summaries = []
     for i, n in enumerate(all_nodes):
-        node_summaries.append(f"[{i}] {node_summary(n)}")
+        prompt = n["data_obj"].get("params", {}).get("prompt", "")
+        node_summaries.append(f"[{i}] {n['name']} ({n['nodeKey'][:12]}) | {prompt}")
 
     lines_text = []
     for l in unmapped:

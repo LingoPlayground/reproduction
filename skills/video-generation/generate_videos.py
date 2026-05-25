@@ -55,7 +55,7 @@ def parse_storyboard(path: str) -> list[dict]:
         if m:
             current_shot = int(m.group(1))
 
-        m = re.match(r"(🔄|📝) \*\*([^*]+) (?:Prompt 替换|Prompt)\*\*:", ln)
+        m = re.match(r"(🔄|📝) \*\*(.+?) (?:Prompt 替换|Prompt)\*\*:", ln)
         if m and current_shot:
             node_name = m.group(2)
             is_replaced = (m.group(1) == "🔄")
@@ -77,8 +77,12 @@ def parse_storyboard(path: str) -> list[dict]:
 
     # Second pass: extract ref images and video URLs per node
     for nd in nodes:
-        name = nd["name"]
-        im = re.search(rf"📸 \*\*{re.escape(name)} 参考图\*\* \((\d+)张\):\n((?:  - [^\n]+\n?)+)", text)
+        full_name = nd["name"]
+        # Strip nodeKey suffix for matching ref image markers (which don't include nodeKey)
+        base_name = re.sub(r'\s*\([a-f0-9]{8}\)$', '', full_name)
+        nd["base_name"] = base_name
+
+        im = re.search(rf"📸 \*\*{re.escape(base_name)} 参考图\*\* \((\d+)张\):\n((?:  - [^\n]+\n?)+)", text)
         if im:
             nd["images"] = re.findall(r"  - (https://[^\n]+)", im.group(2))
         else:
