@@ -479,31 +479,6 @@ def generate_rewrite_storyboard(
     return "\n".join(out)
 
 
-def node_summary(v: dict) -> str:
-    p = v["data_obj"].get("params", {}).get("prompt", "")
-    import re as _re
-    quotes = _re.findall(r'"([^"]{3,60})"', p)
-    quote_str = " | ".join(q[:60] for q in quotes[:3])
-
-    # Skip common style prefixes to show actual scene content
-    scene_start = 0
-    for keyword in ["场景", "镜头", "情节", "画面", "故事"]:
-        idx = p.find(keyword)
-        if 0 < idx < 200:
-            scene_start = idx
-            break
-
-    head = p[scene_start:scene_start + 200].replace("\n", " ")
-    mid = p[len(p)//2 : len(p)//2 + 150].replace("\n", " ") if len(p) > 400 else ""
-
-    parts = [f"{v['name']} | {head}"]
-    if mid:
-        parts.append(f"...{mid}")
-    if quote_str:
-        parts.append(f"[台词: {quote_str}]")
-    return " | ".join(parts)
-
-
 def llm_match_unmapped(
     unmapped: List[dict],
     all_nodes: list[dict],
