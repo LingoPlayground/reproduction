@@ -256,10 +256,18 @@ def build_original_storyboard_map(
         for name, variants in name_nodes.items():
             if len(variants) <= 1:
                 continue
-            best_nk = max(variants.keys(), key=lambda nk: (
-                variants[nk].get("updatedAtMs", 0),
-                len(variants[nk]["data_obj"].get("params", {}).get("prompt", "")),
-            ))
+            # Best variant: the one whose prompt covers the most dialogue lines in this shot
+            shot_lines = [l for l in original_lines if l.get("shot_number") == sn]
+            def coverage(nk):
+                prompt = variants[nk]["data_obj"].get("params", {}).get("prompt", "")
+                return sum(1 for l in shot_lines if fuzzy_match_score(l["original"].lower(), prompt.lower()) >= 60)
+            best_nk = max(variants.keys(), key=coverage)
+            # Tie-break: prompt length
+            if coverage(best_nk) == 0:
+                best_nk = max(variants.keys(), key=lambda nk: (
+                    variants[nk].get("updatedAtMs", 0),
+                    len(variants[nk]["data_obj"].get("params", {}).get("prompt", "")),
+                ))
             best_node = variants[best_nk]
             for line in original_lines:
                 if line.get("shot_number") != sn: continue
