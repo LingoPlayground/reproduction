@@ -241,6 +241,35 @@ def build_original_storyboard_map(
     if fixed:
         print(f"  → {fixed} lines inherited node from same-shot neighbors")
 
+    # Post-processing: per shot, consolidate same-name node variants to single best
+    dedup = 0
+    for sn in set(line.get("shot_number") for line in original_lines):
+        # Group lines by matched node name within this shot
+        name_nodes: dict = {}
+        for line in original_lines:
+            if line.get("shot_number") != sn: continue
+            entry = result.get(line["line_id"], (None, None))
+            if entry and entry[0]:
+                name = entry[0]["name"]
+                name_nodes.setdefault(name, {})[entry[0]["nodeKey"]] = entry[0]
+
+        for name, variants in name_nodes.items():
+            if len(variants) <= 1:
+                continue
+            best_nk = max(variants.keys(), key=lambda nk: (
+                variants[nk].get("updatedAtMs", 0),
+                len(variants[nk]["data_obj"].get("params", {}).get("prompt", "")),
+            ))
+            best_node = variants[best_nk]
+            for line in original_lines:
+                if line.get("shot_number") != sn: continue
+                entry = result.get(line["line_id"], (None, None))
+                if entry and entry[0] and entry[0]["name"] == name and entry[0]["nodeKey"] != best_nk:
+                    result[line["line_id"]] = (best_node, 90)
+                    dedup += 1
+    if dedup:
+        print(f"  → {dedup} lines consolidated to best variant per (shot, name)")
+
     return result
 
 

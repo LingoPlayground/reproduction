@@ -112,14 +112,16 @@ def build_original_node_videos(canvas_path: str, script_path: str) -> dict:
         if not entry or not entry[0]:
             continue
         node = entry[0]
-        name = node["name"]
-        if name not in info:
-            d = node["data_obj"]
-            s = d.get("params", {}).get("settings", {})
-            info[name] = {
-                "video_url": (d.get("url", [None]) or [None])[0],
-                "duration": int(s.get("duration", 15)),
-            }
+        nk = node["nodeKey"]
+        # Store by nodeKey AND by name (for backward compat)
+        for key in [nk, nk[:12], node["name"]]:
+            if key not in info:
+                d = node["data_obj"]
+                s = d.get("params", {}).get("settings", {})
+                info[key] = {
+                    "video_url": (d.get("url", [None]) or [None])[0],
+                    "duration": int(s.get("duration", 15)),
+                }
     return info
 
 
@@ -236,6 +238,7 @@ async def main():
     p.add_argument("--script", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--skip-existing", action="store_true", help="Skip generation if output file already exists")
     p.add_argument("--limit", type=int, default=0, help="Only process first N nodes (0=all)")
     args = p.parse_args()
 
@@ -259,10 +262,23 @@ async def main():
 
     video_files = []
     for idx, nd in enumerate(nodes):
-        orig = orig_info.get(nd["name"], {})
+        orig = orig_info.get(nd["name"])  # try full name+key
+        if not orig:
+            nk = re.search(r'\(([a-f0-9]{8,})\)', nd["name"])
+            if nk:
+                orig = orig_info.get(nk.group(1))  # try nodeKey
+        if not orig:
+            orig = orig_info.get(nd.get("base_name", ""))  # try base name
+        if not orig:
+            orig = {}
         duration = orig.get("duration", 15)
         safe = re.sub(r"[^\w]", "_", nd["name"])[:40]
         path = vdir / f"{idx:02d}_shot{nd['shot']}_{safe}.mp4"
+
+        if args.skip_existing and path.exists():
+            print(f"  [SKIP] Shot {nd['shot']}: {nd['name']} (already exists)")
+            video_files.append(str(path))
+            continue
 
         if nd["replaced"] and nd.get("prompt"):
             new_url = await generate_via_seedance(nd, duration)
