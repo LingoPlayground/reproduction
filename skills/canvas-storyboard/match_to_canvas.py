@@ -325,7 +325,7 @@ def generate_original_storyboard(
                 if nk == last_nk:
                     nd = "*(同上)*"
                 else:
-                    nd = f"✅ {node.get('name', '?')}"
+                    nd = f"✅ {node.get('name', '?')} ({node.get('nodeKey', '')[:8]})"
                     if nk not in shown:
                         nodes_meta[nk] = node
                 last_nk = nk
@@ -351,12 +351,11 @@ def generate_original_storyboard(
                     out.append(f"  - {u}")
                 out.append("")
             if info["prompt"]:
-                out.append(f"📝 **{info['name']} Prompt**:")
+                out.append(f"📝 **{info['name']} ({info['nodeKey'][:8]}) Prompt**:")
                 out.append("```")
                 out.append(info["prompt"][:2000])
                 out.append("```")
-                out.append("")
-
+            out.append("")
         out.append("---\n")
 
     mapped = sum(1 for l in lines if mapping.get(l["line_id"]) and mapping[l["line_id"]][0])
@@ -408,7 +407,7 @@ def generate_rewrite_storyboard(
                     nd = "*(同上)*"
                     ps = "*(同上)*"
                 else:
-                    nd = node.get("name", "?")
+                    nd = f"{node.get('name', '?')} ({nk[:8]})"
                     op = node["data_obj"].get("params", {}).get("prompt", "")
                     np = replace_dialogue_in_prompt(op, orig, rew)
                     if np != op:
@@ -443,12 +442,12 @@ def generate_rewrite_storyboard(
                     out.append(f"  - {u}")
                 out.append("")
             if prompt != info["original_prompt"]:
-                out.append(f"🔄 **{info['name']} Prompt 替换**:")
+                out.append(f"🔄 **{info['name']} ({nk[:8]}) Prompt 替换**:")
                 out.append("```")
                 out.append(prompt[:2000])
                 out.append("```")
             else:
-                out.append(f"📝 **{info['name']} Prompt**:")
+                out.append(f"📝 **{info['name']} ({nk[:8]}) Prompt**:")
                 out.append("```")
                 out.append(prompt[:2000])
                 out.append("```")

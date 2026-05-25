@@ -16,6 +16,7 @@ import sys
 import time
 import tempfile
 import urllib.request
+import uuid
 from pathlib import Path
 
 WORK_DIR = Path(__file__).resolve().parents[2] / "generated"
@@ -138,10 +139,20 @@ def download_image_locally(url: str) -> str:
 
 
 async def upload_local_image(path: str, name: str) -> str:
-    """Upload a local image file to seedance as asset."""
+    """Upload a local image to OSS and return a public URL for seedance."""
     if not path or not os.path.exists(path):
         return ""
-    result = await client.create_asset(url=f"file://{path}", asset_type=AssetType.IMAGE, name=name)
+    
+    import oss2
+    auth = oss2.Auth(os.environ['ALIYUN_ACCESS_KEY_ID'], os.environ['ALIYUN_ACCESS_KEY_SECRET'])
+    bucket = oss2.Bucket(auth, os.environ['ALIYUN_OSS_ENDPOINT'], os.environ['ALIYUN_OSS_BUCKET'])
+    
+    key = f"seedance_refs/{name}_{uuid.uuid4().hex[:8]}.png"
+    bucket.put_object_from_file(key, path)
+    url = bucket.sign_url('GET', key, 86400)
+    
+    # Create seedance asset from OSS URL
+    result = await client.create_asset(url=url, asset_type=AssetType.IMAGE, name=name)
     aid = result.get("data", {}).get("id", result.get("id", ""))
     if aid:
         await client.wait_for_asset(aid, max_wait_time=120)
@@ -221,6 +232,7 @@ async def main():
     p.add_argument("--script", required=True)
     p.add_argument("--output", required=True)
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--limit", type=int, default=0, help="Only process first N nodes (0=all)")
     args = p.parse_args()
 
     WORK_DIR.mkdir(exist_ok=True)
@@ -229,6 +241,10 @@ async def main():
 
     nodes = parse_storyboard(args.storyboard)
     orig_info = build_original_node_videos(args.canvas, args.script)
+
+    if args.limit > 0:
+        nodes = nodes[: args.limit]
+        print(f"Limited to first {args.limit} nodes")
 
     if args.dry_run:
         for nd in nodes:
