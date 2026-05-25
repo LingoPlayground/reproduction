@@ -1,0 +1,11 @@
+generated/
+storyboards/
+rewrites/
+runs/
+*.pyc
+__pycache__/
+.env
+.omo/run-continuation/
+.pytest_cache/
+.DS_Store
+*.egg-info/
