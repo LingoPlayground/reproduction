@@ -1,18 +1,28 @@
 #!/usr/bin/env python3
 """
-Stage 3: Canvas Storyboard — Two-step process
+Stage 3: Canvas Storyboard — LLM e2e matching with Rule A/B scoring
 
 Step A (no --rewrite): Match original script dialogue to canvas nodes → original storyboard
 Step B (with --rewrite): Use original mapping, replace dialogue in prompts → rewrite storyboard
 
+Matching uses LLM end-to-end with contextual continuity (Rule A) and dead-clip
+discrimination (Rule B). Multiple runs are voted on by score_mapping().
+
 Usage:
-  # Step A: Generate original storyboard
+  # Step A: Generate original storyboard (single LLM run)
   python3 skills/canvas-storyboard/match_to_canvas.py \
     --script episode1_script.json \
     --canvas m2VuuIZfI \
     --output storyboard_ep1_original.md
 
-  # Step B: Generate rewrite storyboard (uses same --script for mapping)
+  # Step A with voting (5 runs, pick best score):
+  python3 skills/canvas-storyboard/match_to_canvas.py \
+    --script episode1_script.json \
+    --canvas m2VuuIZfI \
+    --output storyboard_ep1_original.md \
+    --llm-runs 5
+
+  # Step B: Generate rewrite storyboard
   python3 skills/canvas-storyboard/match_to_canvas.py \
     --script episode1_script.json \
     --rewrite rewrites/ep1_A2.json \
@@ -107,178 +117,7 @@ def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def fuzzy_match_score(dialogue_lower: str, prompt_lower: str) -> int:
-    dl_norm = _normalize(dialogue_lower)
-    pr_norm = _normalize(prompt_lower)
-    total_words = len(dl_norm.split())
-    if len(dl_norm) < 5 or total_words < 2:
-        return 0
-    if dl_norm in pr_norm:
-        return 100
-    words = [w for w in dl_norm.split() if len(w) >= 3 or w.isdigit()]
-    if not words:
-        return 0
-    best_sub = 0
-    for win in range(len(words), 1, -1):
-        for i in range(len(words) - win + 1):
-            sub = " ".join(words[i : i + win])
-            if sub in pr_norm:
-                best_sub = max(best_sub, win * 100 // len(words))
-    if best_sub > 0:
-        return best_sub
-    for skip in range(1, min(4, len(words))):
-        sub = " ".join(words[skip:])
-        if sub in pr_norm:
-            return 80
-    hits = sum(1 for w in words if w in pr_norm)
-    if len(words) < total_words:
-        return hits * 100 // total_words
-    return hits * 100 // max(len(words), 1)
 
-
-def match_line_to_node(
-    dialogue: str, scene_desc: str, nodes: list[dict], min_score: int = 55
-) -> Optional[Tuple[dict, int]]:
-    dl = dialogue.strip().lower()
-    sd = scene_desc.strip().lower()
-    if len(dl) < 5 and len(sd) < 5:
-        return None
-
-    best, best_score = None, 0
-    for v in nodes:
-        prompt = v["data_obj"].get("params", {}).get("prompt", "").lower()
-        dialogue_score = fuzzy_match_score(dl, prompt)
-        scene_score = fuzzy_match_score(sd, prompt) if sd else 0
-
-        # Combined: dialogue is primary (weight 0.7), scene confirms (weight 0.3)
-        if dialogue_score >= 80 or dialogue_score > scene_score * 2:
-            combined = dialogue_score
-            if scene_score >= 60:
-                combined = min(100, combined + 10)  # bonus for scene match
-        elif scene_score >= 60 and dialogue_score < 40:
-            combined = scene_score  # scene-driven match when dialogue is weak
-        else:
-            combined = max(dialogue_score, scene_score)
-
-        if combined > best_score:
-            best_score, best = combined, v
-        elif combined == best_score and best:
-            if v.get("updatedAtMs", 0) > best.get("updatedAtMs", 0):
-                best = v
-
-    if best and best_score >= min_score:
-        return (best, best_score)
-    return None
-
-
-def build_original_storyboard_map(
-    original_lines: List[dict], nodes: list[dict], min_score: int = 55
-) -> Dict[str, Tuple[Optional[dict], Optional[int]]]:
-    unique_texts = {}
-    for line in original_lines:
-        dialogue = line["original"].strip()
-        scene = line.get("shot_scene", "").strip()
-        key = (dialogue, scene)
-        if key not in unique_texts:
-            result = match_line_to_node(dialogue, scene, nodes, min_score)
-            unique_texts[key] = result if result else (None, None)
-
-    result = {}
-    matched = 0
-    for line in original_lines:
-        dialogue = line["original"].strip()
-        scene = line.get("shot_scene", "").strip()
-        key = (dialogue, scene)
-        result[line["line_id"]] = unique_texts.get(key, (None, None))
-        if unique_texts.get(key) and unique_texts[key][0]:
-            matched += 1
-
-    unique = len(unique_texts)
-    unique_matched = sum(1 for v in unique_texts.values() if v and v[0])
-    print(f"Original→node mapping: {unique_matched}/{unique} unique (dialogue+scene) mapped ({matched}/{len(original_lines)} lines)")
-
-    # Post-processing: unmapped lines inherit node from mapped lines in the SAME shot
-    fixed = 0
-    for i, line in enumerate(original_lines):
-        lid = line["line_id"]
-        entry = result.get(lid, (None, None))
-        if not entry or entry[0] is not None:
-            continue
-        dialogue = line["original"].strip()
-        shot = line.get("shot_number")
-        # Short names (≤10 chars): inherit from any neighbor
-        # Longer lines: only inherit if all lines in this shot share the same node
-        if len(dialogue) > 10:
-            # Check if all mapped lines in this shot share the same node
-            shot_nodes = set()
-            for l2 in original_lines:
-                if l2.get("shot_number") != shot: continue
-                e2 = result.get(l2["line_id"], (None, None))
-                if e2 and e2[0]:
-                    shot_nodes.add(e2[0].get("nodeKey", ""))
-            if len(shot_nodes) == 1 and shot_nodes:
-                shot_node = None
-                for l2 in original_lines:
-                    if l2.get("shot_number") == shot:
-                        e2 = result.get(l2["line_id"], (None, None))
-                        if e2 and e2[0]:
-                            shot_node = e2[0]; break
-                if shot_node:
-                    result[lid] = (shot_node, 90)
-                    fixed += 1
-                continue
-            else:
-                continue
-        # Short name inheritance (≤10 chars)
-        for offset in [1, -1, 2, -2, 3, -3]:
-            ni = i + offset
-            if 0 <= ni < len(original_lines) and original_lines[ni].get("shot_number") == shot:
-                neighbor = result.get(original_lines[ni]["line_id"])
-                if neighbor and neighbor[0]:
-                    result[lid] = (neighbor[0], 95)
-                    fixed += 1
-                    break
-    if fixed:
-        print(f"  → {fixed} lines inherited node from same-shot neighbors")
-
-    # Post-processing: per shot, consolidate same-name node variants to single best
-    dedup = 0
-    for sn in set(line.get("shot_number") for line in original_lines):
-        # Group lines by matched node name within this shot
-        name_nodes: dict = {}
-        for line in original_lines:
-            if line.get("shot_number") != sn: continue
-            entry = result.get(line["line_id"], (None, None))
-            if entry and entry[0]:
-                name = entry[0]["name"]
-                name_nodes.setdefault(name, {})[entry[0]["nodeKey"]] = entry[0]
-
-        for name, variants in name_nodes.items():
-            if len(variants) <= 1:
-                continue
-            # Best variant: the one whose prompt covers the most dialogue lines in this shot
-            shot_lines = [l for l in original_lines if l.get("shot_number") == sn]
-            def coverage(nk):
-                prompt = variants[nk]["data_obj"].get("params", {}).get("prompt", "")
-                return sum(1 for l in shot_lines if fuzzy_match_score(l["original"].lower(), prompt.lower()) >= 60)
-            best_nk = max(variants.keys(), key=coverage)
-            # Tie-break: prompt length
-            if coverage(best_nk) == 0:
-                best_nk = max(variants.keys(), key=lambda nk: (
-                    variants[nk].get("updatedAtMs", 0),
-                    len(variants[nk]["data_obj"].get("params", {}).get("prompt", "")),
-                ))
-            best_node = variants[best_nk]
-            for line in original_lines:
-                if line.get("shot_number") != sn: continue
-                entry = result.get(line["line_id"], (None, None))
-                if entry and entry[0] and entry[0]["name"] == name and entry[0]["nodeKey"] != best_nk:
-                    result[line["line_id"]] = (best_node, 90)
-                    dedup += 1
-    if dedup:
-        print(f"  → {dedup} lines consolidated to best variant per (shot, name)")
-
-    return result
 
 
 def _find_dialogue_span(prompt: str, orig_norm: str) -> Optional[Tuple[int, int]]:
@@ -516,51 +355,99 @@ def generate_rewrite_storyboard(
     return "\n".join(out)
 
 
-def llm_match_unmapped(
-    unmapped: List[dict],
+def llm_end_to_end_match(
+    all_lines: List[dict],
     all_nodes: list[dict],
-    env_file: Optional[str] = None,
 ) -> Dict[str, Tuple[Optional[dict], Optional[int]]]:
-    if not unmapped:
-        return {}
+    """Single-shot LLM: provide all nodes + all lines, let LLM decide globally."""
 
-    node_summaries = []
+    node_catalog = []
     for i, n in enumerate(all_nodes):
-        prompt = n["data_obj"].get("params", {}).get("prompt", "")
-        node_summaries.append(f"[{i}] {n['name']} ({n['nodeKey'][:12]}) | {prompt}")
+        p = n["data_obj"].get("params", {}).get("prompt", "")
+        has_video = bool(n["data_obj"].get("url"))
+        node_catalog.append({
+            "id": i,
+            "name": n["name"],
+            "has_video": has_video,
+            "prompt": p,
+        })
 
     lines_text = []
-    for l in unmapped:
-        lines_text.append(
-            f"line_id={l['line_id']} | scene=\"{l.get('shot_scene','')[:150]}\" | "
-            f"speaker={l.get('speaker','?')} | dialogue=\"{l['original']}\""
-        )
+    current_shot = None
+    for l in all_lines:
+        sn = l["shot_number"]
+        if sn != current_shot:
+            current_shot = sn
+            lines_text.append(f"\n[Shot {sn}]")
+            lines_text.append(f'scene: "{l.get("shot_scene", "")}"')
+        lines_text.append(f'{l["line_id"]} | {l["speaker"]}: "{l["original"]}"')
 
-    prompt = (
-        "你是剧本-画布场景匹配器。请为每行未匹配的台词找到对应的画布视频节点。\n\n"
-        "【最重要】按场景匹配——先看场景描述，再看台词：\n\n"
-        "第1步（场景匹配-必做）：\n"
-        "  对比每行的 scene（场景描述）与每个节点的 prompt 前200字符。\n"
-        "  场景关键词必须一致，否则排除该节点：\n"
-        '    scene 含"毕业典礼/DJ"→ 只匹配 prompt 含"毕业典礼/DJ/典礼"的节点\n'
-        '    scene 含"台阶/女友哭诉"→ 只匹配 prompt 含"台阶/女孩/女友"的节点\n'
-        '    scene 含"贩卖机/扫脸/校园"→ 只匹配 prompt 含"贩卖机/扫脸/校园"的节点\n'
-        '    scene 含"办公室/父亲/通牒"→ 只匹配 prompt 含"办公室/父亲/通牒"的节点\n'
-        '    scene 含"客厅/漆黑/关灯"→ 只匹配 prompt 含"客厅/漆黑/关灯"的节点\n'
-        "  场景不匹配的节点直接跳过，绝不要选。\n\n"
-        "第2步（台词匹配-辅助）：\n"
-        "  在场景匹配的候选节点中，再看对话原文或近义表达是否出现。\n"
-        '  "Face test okay" → "扫脸认证"；"Money has run out" → "没钱了/余额不足"\n\n'
-        "第3步：场景和台词都不匹配 → node_index 设为 null\n\n"
-        f"画布节点列表（共{len(all_nodes)}个）：\n{chr(10).join(node_summaries)}\n\n"
-        f"未匹配的台词行（{len(unmapped)}行）：\n{chr(10).join(lines_text)}\n\n"
-        "严格输出一个 JSON 数组：\n"
-        '[{"line_id":"p007_l001","node_index":0,"reason":"场景匹配+台词匹配"}]'
-    )
+    system_msg = """## Role
+You are an expert Video Production Data Aligner. Your task is to map every messy ASR script line to its EXACT corresponding final production canvas node from Liblib TV, filtering out "dead/discarded clips" (废片) and iteration copies.
+
+## Input Data Format
+1. Script Lines: Format is `line_id | Speaker: "ASR Dialogue"`, preceded by `[Shot X]` and a `scene: "Visual description from Multimodal LLM"`.
+   *ASR dialogue is noisy. Scene description is highly accurate visually.*
+2. Node Catalog: A list of JSON objects `{"id": X, "name": "...", "has_video": true/false, "prompt": "..."}`.
+   *Prompt contains ground-truth dialogue in quotes and scene descriptions.*
+
+## The "Dead Clip" & Iteration Challenge (CRITICAL)
+The Node Catalog contains many "dead clips" (废片) and duplicates (e.g., "视频节点 22 - 副本"). The final video ONLY uses the polished final versions.
+- **Rule A**: Storytelling flows linearly. If Line N maps to Node X, Line N+1 should naturally map to Node X or Node X+1.
+  Discard nodes that break the narrative timeline unless forced.
+- **Rule B**: If multiple nodes have identical prompts, prioritize `has_video: true` and chronological fit.
+  Never split consecutive lines across identical twin nodes.
+
+## Matching Strategy (Priority Order)
+
+**About ASR quality**: The script's dialogue comes from automatic speech recognition (ASR) and is often unreliable. Expect: character names appended to lines ("are they going crazy Donnie" vs "are they going crazy"), punctuation noise ("You are not a man." vs "You are not a man!"), word substitutions, and phantom words. The node prompts contain the actual dialogue spoken in the video — treat them as ground truth. When in doubt, trust the scene description over the ASR text.
+
+1. Tier 1: Extract dialogue from `""` in node prompt. Compare with ASR.
+   Ignore punctuation, capitalization, minor typos, and trailing character names.
+2. Tier 2: Match script `scene:` description with node prompt scene (cross-lingual).
+   Core meaning and subclause matching — focus on semantic similarity rather than token-level overlap.
+3. Tier 3: If truly no matching node, assign null.
+
+## Grouping rules — minimize nodes, avoid duplicates
+
+- If one node's prompt contains dialogue for multiple consecutive lines, assign ALL those lines to that node.
+- When multiple nodes could match a given line, prefer the one that also covers adjacent lines — fewer overall nodes is better.
+- NEVER assign a line to a node whose prompt does not contain it (or a close approximation), even if that node covers adjacent lines.
+- If two nodes are different copies containing the SAME English dialogue, pick only ONE of them. Do not split a continuous conversation across two copies of the same scene.
+
+## Output Format
+Output ONLY valid JSON.
+
+```json
+{"mappings": [
+  {"line_id": "p001_l001", "node_id": 9, "reason": "Tier1 exact dialogue match; selected over Node 10 (copy) to maintain chronological order"},
+  {"line_id": "p007_l001", "node_id": 63, "reason": "Tier2 scene match: vending machine"},
+  {"line_id": "p099_l001", "node_id": null, "reason": "no relevant node in catalog"}
+]}
+```
+
+The `reason` field MUST include: (1) which Tier was used, and (2) if Rule A or Rule B influenced the choice, state how (e.g., "Selected over Node 10 (copy) to maintain chronological order", "Preferred has_video=true node").
+
+## Verification Checklist
+- Every `line_id` from the script appears exactly once in the output?
+- No dead copy node that breaks timeline?
+- All `node_id` integers or null?
+- Consecutive lines within the same shot map to the same or adjacent nodes (Rule A)?
+- When twin nodes exist, the one with `has_video=true` was preferred (Rule B)?"""
+
+    import json as _j
+    user_msg = f"""## Canvas Nodes
+
+{_j.dumps(node_catalog, ensure_ascii=False)}
+
+## Script Lines
+
+{chr(10).join(lines_text)}
+
+Output the mapping for all {len(all_lines)} lines."""
 
     import os as _os
     from pathlib import Path as _Path
-
     for env_path in [
         str(_Path("~/workspace/lingolens/backend/.env").expanduser()),
         str(_Path("~/workspace/shakespeare/.env").expanduser()),
@@ -574,13 +461,14 @@ def llm_match_unmapped(
 
     api_key = _os.environ.get("DEEPSEEK_API_KEY", "")
     base_url = _os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-    model = _os.environ.get("LLM_MATCH_MODEL", "deepseek-chat")
+    model = _os.environ.get("LLM_MATCH_MODEL", "deepseek-v4-flash")
 
     if not api_key:
-        print("  ⚠️  No DEEPSEEK_API_KEY, skipping LLM match")
+        print("  ⚠️  No DEEPSEEK_API_KEY, skipping e2e LLM match")
         return {}
 
-    print(f"  🤖 LLM semantic matching {len(unmapped)} lines against {len(all_nodes)} nodes...")
+    prompt_chars = len(system_msg) + len(user_msg)
+    print(f"  🤖 LLM e2e match: {len(all_lines)} lines, {len(all_nodes)} nodes, ~{prompt_chars // 4} tokens")
     print(f"     model={model} base_url={base_url}")
 
     try:
@@ -588,11 +476,15 @@ def llm_match_unmapped(
         client = OpenAI(api_key=api_key, base_url=base_url)
         resp = client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=2000,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.0,
+            max_tokens=128000,
         )
-        text = resp.choices[0].message.content or ""
+        msg = resp.choices[0].message
+        text = msg.content or ""
     except Exception as e:
         print(f"  ⚠️  LLM call failed: {e}")
         return {}
@@ -601,60 +493,179 @@ def llm_match_unmapped(
         print("  ⚠️  Empty LLM response")
         return {}
 
-    # Parse JSON (may be wrapped in ```json ... ```)
     import re as _re
-    json_match = _re.search(r'\[\s*\{', text)
-    if json_match:
-        start = json_match.start()
+    obj_match = _re.search(r'\{[^{]*"mappings"', text)
+    if not obj_match:
+        obj_match = _re.search(r'\[\s*\{', text)
+    if obj_match:
+        start = obj_match.start()
         depth = 0
         end = start
         for i in range(start, len(text)):
-            if text[i] == '[': depth += 1
-            elif text[i] == ']':
+            if text[i] in '{[': depth += 1
+            elif text[i] in '}]':
                 depth -= 1
                 if depth == 0:
                     end = i + 1
                     break
         json_str = text[start:end]
     else:
-        json_str = None
-
-    if not json_str:
-        print(f"  ⚠️  Could not parse LLM response: {text[:200]}")
+        print(f"  ⚠️  Could not parse LLM response: {text[:300]}")
         return {}
 
     try:
-        results = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        print(f"  ⚠️  Invalid JSON: {e}")
-        print(f"     ...{json_str[-100:]}")
-        return {}
+        data = _j.loads(json_str)
+    except _j.JSONDecodeError:
+        cleaned = json_str.replace('\n', ' ').replace('  ', ' ')
+        try:
+            data = _j.loads(cleaned)
+        except _j.JSONDecodeError as e:
+            print(f"  ⚠️  Invalid JSON: {e}")
+            print(f"     ...{json_str[-200:]}")
+            return {}
 
-    if isinstance(results, dict) and "line_id" in results:
-        results = [results]
+    mappings = data.get("mappings", data if isinstance(data, list) else [])
 
-    mapping = {}
-    for r in (results if isinstance(results, list) else [results]):
-        if not isinstance(r, dict):
+    result = {}
+    matched = unmatched = 0
+    for m in mappings:
+        if not isinstance(m, dict):
             continue
-        lid = r.get("line_id")
-        ni = r.get("node_index")
-        reason = r.get("reason", "")
-        if ni is not None and isinstance(ni, int) and 0 <= ni < len(all_nodes):
-            mapping[lid] = (all_nodes[ni], 95)
-            print(f"     ✅ {lid} → {all_nodes[ni]['name']} ({reason})")
+        lid = m.get("line_id")
+        if not lid:
+            continue
+        nid = m.get("node_id")
+        reason = m.get("reason", "")
+        if nid is not None and isinstance(nid, int) and 0 <= nid < len(all_nodes):
+            node = all_nodes[nid]
+            result[lid] = (node, 95)
+            print(f"     ✅ {lid} → #{nid} {node['name']} [{reason}]")
+            matched += 1
         else:
-            mapping[lid] = (None, None)
-            print(f"     —  {lid} → NONE ({reason})")
-    return mapping
+            result[lid] = (None, None)
+            print(f"     —  {lid} → NONE [{reason}]")
+            unmatched += 1
+
+    print(f"     LLM e2e result: {matched} matched, {unmatched} unmatched")
+    return result
+
+
+def score_mapping(
+    mapping: Dict[str, Tuple[Optional[dict], Optional[int]]],
+    all_lines: List[dict],
+    all_nodes: Optional[list] = None,
+) -> int:
+    """Score a mapping. Higher is better.
+
+    Penalties:
+    - Uncovered lines: -100 per line
+    - Rule A (continuity): -30 when consecutive lines in same shot jump to non-adjacent nodes
+    - Rule B (dead clips): -20 when has_video=false node chosen over a has_video=true twin
+    Bonus:
+    - +5 per matched line
+    """
+    score = 0
+
+    # Penalty 1: Uncovered lines
+    uncovered = 0
+    for l in all_lines:
+        entry = mapping.get(l["line_id"])
+        if not entry or not entry[0]:
+            uncovered += 1
+    score -= uncovered * 100
+
+    # Bonus: matched lines
+    score += (len(all_lines) - uncovered) * 5
+
+    if all_nodes is None:
+        return score
+
+    # Build node index lookup (same object identity)
+    node_to_idx: Dict[int, int] = {id(n): i for i, n in enumerate(all_nodes)}
+
+    # Rule B: Detect twin nodes (identical normalized prompt, different has_video)
+    prompt_to_nodes: Dict[str, List[Tuple[int, bool]]] = defaultdict(list)
+    for i, n in enumerate(all_nodes):
+        p = n["data_obj"].get("params", {}).get("prompt", "")
+        key = _normalize(p.lower()) if p else ""
+        if len(key) >= 20:
+            prompt_to_nodes[key].append((i, bool(n["data_obj"].get("url"))))
+
+    # Nodes that are dead clips (has_video=false) with a has_video=true twin
+    dead_clip_ids: set = set()
+    for key, members in prompt_to_nodes.items():
+        if len(members) <= 1:
+            continue
+        has_live = any(hv for _, hv in members)
+        if has_live:
+            for idx, hv in members:
+                if not hv:  # has_video=false twin exists alongside has_video=true
+                    dead_clip_ids.add(idx)
+
+    # Rule B penalty: lines mapped to dead clips
+    rule_b_violations = 0
+    for l in all_lines:
+        entry = mapping.get(l["line_id"])
+        if entry and entry[0]:
+            idx = node_to_idx.get(id(entry[0]))
+            if idx is not None and idx in dead_clip_ids:
+                rule_b_violations += 1
+    score -= rule_b_violations * 20
+
+    # Rule A: Continuity — consecutive lines in same shot should not jump far
+    shot_lines: Dict[Optional[int], List[dict]] = defaultdict(list)
+    for l in all_lines:
+        sn = l.get("shot_number")
+        if sn is not None:
+            shot_lines[sn].append(l)
+
+    rule_a_violations = 0
+    for sn, lines in shot_lines.items():
+        lines_sorted = sorted(lines, key=lambda x: x["line_id"])
+        for i in range(len(lines_sorted) - 1):
+            curr = mapping.get(lines_sorted[i]["line_id"])
+            nxt = mapping.get(lines_sorted[i + 1]["line_id"])
+            if not curr or not curr[0] or not nxt or not nxt[0]:
+                continue
+            curr_idx = node_to_idx.get(id(curr[0]))
+            nxt_idx = node_to_idx.get(id(nxt[0]))
+            if curr_idx is not None and nxt_idx is not None:
+                # Large node-id gap within same shot = potential timeline break
+                if abs(curr_idx - nxt_idx) > 5:
+                    rule_a_violations += 1
+    score -= rule_a_violations * 30
+
+    return score
+
+
+def llm_e2e_vote(
+    all_lines: List[dict],
+    all_nodes: list[dict],
+    num_runs: int = 3,
+) -> Dict[str, Tuple[Optional[dict], Optional[int]]]:
+    """Run LLM e2e matching multiple times, pick the best-scoring result."""
+    best_mapping, best_score = None, -99999
+    for run in range(num_runs):
+        print(f"\n  --- Run {run + 1}/{num_runs} ---")
+        mapping = llm_end_to_end_match(all_lines, all_nodes)
+        if not mapping:
+            continue
+        score = score_mapping(mapping, all_lines, all_nodes)
+        print(f"     Score: {score} (best: {best_score})")
+        if score > best_score:
+            best_score = score
+            best_mapping = mapping
+    print(f"\n  🏆 Selected run with score {best_score}")
+    return best_mapping if best_mapping else {}
+
+
 def main():
-    p = argparse.ArgumentParser(description="Stage 3: Canvas Storyboard")
+    p = argparse.ArgumentParser(description="Stage 3: Canvas Storyboard — LLM e2e matching")
     p.add_argument("--script", required=True, help="Original script JSON (ScriptInput format)")
     p.add_argument("--rewrite", default=None, help="Optional: rewrite JSON for step B")
     p.add_argument("--canvas", required=True, help="Canvas shareId or local JSON")
     p.add_argument("--output", required=True, help="Output markdown path")
-    p.add_argument("--min-score", type=int, default=55)
-    p.add_argument("--llm", action="store_true", help="Use LLM for semantic matching of unmapped lines")
+    p.add_argument("--llm-runs", type=int, default=5, help="Number of LLM runs for voting (default: 5)")
     args = p.parse_args()
 
     print(f"Loading script: {args.script}")
@@ -665,15 +676,11 @@ def main():
     nodes = video_nodes(parse_nodes(canvas_data))
     print(f"  {len(nodes)} video nodes")
 
-    mapping = build_original_storyboard_map(original_lines, nodes, args.min_score)
-
-    if args.llm:
-        unmapped = [(lid, entry) for lid, entry in mapping.items() if not entry or not entry[0]]
-        if unmapped:
-            unmapped_lines = [l for l in original_lines if l["line_id"] in dict(unmapped)]
-            llm_results = llm_match_unmapped(unmapped_lines, nodes)
-            for lid, result in llm_results.items():
-                mapping[lid] = result
+    if args.llm_runs > 1:
+        mapping = llm_e2e_vote(original_lines, nodes, args.llm_runs)
+    else:
+        print(f"\n  🤖 LLM matching...")
+        mapping = llm_end_to_end_match(original_lines, nodes)
 
     if args.rewrite:
         print(f"Loading rewrite: {args.rewrite}")
