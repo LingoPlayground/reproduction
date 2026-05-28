@@ -2,140 +2,120 @@
 """
 Stage 1: Video Script Extraction
 
-Wraps lingolens VideoScriptExtractor to extract structured screenplay from
-AI-generated video + ASR transcription.
+Extracts structured screenplay from video using lingolens VideoScriptExtractor.
+Auto-generates ASR via Azure Speech, then runs multimodal LLM analysis.
 
 Usage:
   python3 skills/script-extraction/extract_script.py \\
     --video /path/to/video.mp4 \\
-    --utterances /path/to/asr.json \\
     --output ep1_script.json
 """
 
 import argparse
 import asyncio
 import json
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List
 
-# ── lingolens import ──────────────────────────────────────────────────────
+# ── lingolens setup ───────────────────────────────────────────────────────
 LINGOLENS_ROOT = Path("~/workspace/lingolens").expanduser().resolve()
+
+for env_path in [
+    LINGOLENS_ROOT / "backend" / ".env",
+    Path("~/workspace/shakespeare/.env").expanduser(),
+]:
+    if env_path.exists():
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+
+sys.path.insert(0, str(LINGOLENS_ROOT))
 sys.path.insert(0, str(LINGOLENS_ROOT / "backend"))
 
 try:
     from agents.script_extraction import VideoScriptExtractor
 except ImportError as e:
     print(f"❌ 无法导入 lingolens VideoScriptExtractor: {e}")
-    print(f"   请确认 {LINGOLENS_ROOT} 存在且 backend/ 可导入")
     sys.exit(1)
 
 
-# ── Multimodal LLM (Doubao Seed) ──────────────────────────────────────────
-# Uses lingolens' LLMServiceFactory — the same pattern as production code.
-# Requires: DOUBAO_API_KEY in environment (from ~/workspace/lingolens/backend/.env)
-
-
 def get_multimodal_llm():
-    """Get a multimodal-capable LLM service for VideoScriptExtractor.
-
-    Uses LLMServiceFactory.get("doubao-seed-2-0-pro-260215") which returns
-    a ResponsesApiService instance. This is the same pattern used in:
-    - backend/scripts/extract_scripts_batch.py (line 133)
-    - backend/tasks/course_task_runners.py (line 241)
-    """
     from services.llm.factory import LLMServiceFactory
-
     service = LLMServiceFactory.get("doubao-seed-2-0-pro-260215")
     if not service.enabled:
-        raise RuntimeError(
-            "Doubao multimodal LLM 未启用。请检查 DOUBAO_API_KEY 环境变量。\n"
-            "配置来源: ~/workspace/lingolens/backend/.env"
-        )
+        raise RuntimeError("Doubao multimodal LLM 未启用")
     return service
 
 
-# ── Main ───────────────────────────────────────────────────────────────────
+async def auto_asr(video_path: str) -> List[Dict[str, Any]]:
+    """Extract audio from video and transcribe via Azure ASR."""
+    from services.asr_service import ASRService
+    from services.media_service import MediaService
+
+    print("🎵 提取音频...")
+    audio_path = str(Path(tempfile.gettempdir()) / f"asr_audio_{os.getpid()}.wav")
+    try:
+        MediaService.extract_audio_wav(video_path, audio_path)
+
+        print("🎙️  Azure ASR 转录中...")
+        asr = ASRService()
+        asr_result = await asr.transcribe(audio_path)
+        if not asr_result.get("success"):
+            raise RuntimeError(f"ASR 失败: {asr_result}")
+
+        utterances = asr.extract_utterances(asr_result)
+        print(f"   {len(utterances)} 条转录")
+        return utterances
+    finally:
+        Path(audio_path).unlink(missing_ok=True)
+
+
+def get_video_duration(video_path: str, utterances: List[Dict[str, Any]]) -> float:
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
+             video_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        return float(result.stdout.strip())
+    except (subprocess.SubprocessError, ValueError, FileNotFoundError):
+        if utterances:
+            return max(u.get("end_time", 0) for u in utterances) / 1000.0
+        return 0.0
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Stage 1: 从视频 + ASR 提取结构化剧本"
-    )
+    parser = argparse.ArgumentParser(description="Stage 1: 从视频提取结构化剧本（自动 ASR）")
     parser.add_argument("--video", required=True, help="原始视频文件路径")
-    parser.add_argument("--utterances", required=True, help="ASR 转录 JSON 文件路径")
     parser.add_argument("--output", default="script_output.json", help="输出 JSON 路径")
     parser.add_argument("--temp-dir", default="runs", help="调试输出目录")
     return parser.parse_args()
 
 
-def load_utterances(path: str) -> List[Dict[str, Any]]:
-    """Load and validate ASR utterances JSON."""
-    with open(path, "r", encoding="utf-8") as f:
-        utterances = json.load(f)
-
-    if not isinstance(utterances, list):
-        sys.exit(f"❌ utterances 文件必须是 JSON 数组，当前类型: {type(utterances)}")
-
-    required = {"speaker", "start_time", "end_time", "text"}
-    for i, u in enumerate(utterances):
-        missing = required - set(u.keys())
-        if missing:
-            sys.exit(f"❌ utterances[{i}] 缺少必填字段: {missing}")
-
-    return utterances
-
-
-def get_video_duration(video_path: str) -> float:
-    """Get video duration using ffprobe or fallback."""
-    import subprocess
-
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "error", "-show_entries",
-                "format=duration", "-of", "default=noprint_wrappers=1:nokey=1",
-                video_path,
-            ],
-            capture_output=True, text=True, timeout=10,
-        )
-        return float(result.stdout.strip())
-    except (subprocess.SubprocessError, ValueError, FileNotFoundError):
-        print("⚠️  ffprobe 不可用，从 ASR 数据推算时长")
-        # Fallback: use max end_time from utterances
-        utterances = load_utterances(
-            sys.argv[sys.argv.index("--utterances") + 1]
-            if "--utterances" in sys.argv else ""
-        )
-        if utterances:
-            return max(u["end_time"] for u in utterances) / 1000.0
-        return 0.0
-
-
 async def main() -> None:
+    os.chdir(str(LINGOLENS_ROOT))
     args = parse_args()
 
-    # 1. Validate inputs
     video_path = str(Path(args.video).resolve())
     if not Path(video_path).exists():
         sys.exit(f"❌ 视频文件不存在: {video_path}")
 
-    utterances_path = str(Path(args.utterances).resolve())
-    if not Path(utterances_path).exists():
-        sys.exit(f"❌ ASR 文件不存在: {utterances_path}")
+    utterances = await auto_asr(video_path)
 
-    utterances = load_utterances(utterances_path)
-    print(f"📖 加载 {len(utterances)} 条 ASR 转录")
-
-    duration = get_video_duration(args.video)
+    duration = get_video_duration(video_path, utterances)
     print(f"⏱️  视频时长: {duration:.1f}s")
 
-    # 2. Initialize extractor with Doubao Seed multimodal LLM
     llm = get_multimodal_llm()
-
     extractor = VideoScriptExtractor(multimodal_llm=llm)
 
-    # 3. Extract
     output_path = str(Path(args.output).resolve())
     temp_dir = args.temp_dir
     Path(temp_dir).mkdir(parents=True, exist_ok=True)
@@ -151,7 +131,6 @@ async def main() -> None:
     except RuntimeError as e:
         sys.exit(f"❌ 提取失败: {e}")
 
-    # 4. Write output
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(result.model_dump(), f, ensure_ascii=False, indent=2)
 
