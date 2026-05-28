@@ -32,6 +32,7 @@ Usage:
 
 import argparse
 import json
+import random
 import re
 import ssl
 import sys
@@ -643,11 +644,18 @@ def llm_e2e_vote(
     all_nodes: list[dict],
     num_runs: int = 3,
 ) -> Dict[str, Tuple[Optional[dict], Optional[int]]]:
-    """Run LLM e2e matching multiple times, pick the best-scoring result."""
+    """Run LLM e2e matching multiple times with shuffled node order, pick the best-scoring result.
+
+    Shuffling the node catalog each run mitigates LLM 'lost in the middle' bias,
+    where nodes at the edges of the catalog receive disproportionate attention.
+    Scoring always uses the original node order for Rule A continuity checks.
+    """
     best_mapping, best_score = None, -99999
     for run in range(num_runs):
         print(f"\n  --- Run {run + 1}/{num_runs} ---")
-        mapping = llm_end_to_end_match(all_lines, all_nodes)
+        shuffled_nodes = list(all_nodes)
+        random.shuffle(shuffled_nodes)
+        mapping = llm_end_to_end_match(all_lines, shuffled_nodes)
         if not mapping:
             continue
         score = score_mapping(mapping, all_lines, all_nodes)
