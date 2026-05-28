@@ -24,7 +24,7 @@ One LLM call per CEFR level, with CEFR vocabulary index for quality guidance.
 ## Stage 3: canvas-storyboard
 
 Match script lines to LibLib Canvas video nodes, replace original dialogue in prompts with rewritten text.
-Two-stage matching: fuzzy_match (~89%, free) + LLM semantic (deepseek-chat, completes to 100%).
+Uses LLM end-to-end matching with Rule A/B scoring and voting (deepseek-chat).
 
 ## Stage 4: video-generation
 
@@ -40,10 +40,15 @@ concatenate into final episode.
 python3 skills/script-rewriting/rewrite_script.py \
   --script episode1_script.json --levels A2,B2,C1 --output-dir rewrites/
 
-# Stage 3: Generate rewrite storyboard
+# Stage 3: Generate rewrite storyboard (single LLM run)
 python3 skills/canvas-storyboard/match_to_canvas.py \
   --script episode1_script.json --rewrite rewrites/ep1_B2.json \
-  --canvas m2VuuIZfI --output storyboards/storyboard_ep1_B2.md --llm
+  --canvas m2VuuIZfI --output storyboards/storyboard_ep1_B2.md
+
+# Stage 3: Generate rewrite storyboard (5-run voting for best score)
+python3 skills/canvas-storyboard/match_to_canvas.py \
+  --script episode1_script.json --rewrite rewrites/ep1_B2.json \
+  --canvas m2VuuIZfI --output storyboards/storyboard_ep1_B2.md --llm-runs 5
 
 # Stage 4: Generate final video
 python3 skills/video-generation/generate_videos.py \
