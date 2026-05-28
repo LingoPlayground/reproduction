@@ -664,6 +664,8 @@ def llm_e2e_vote(
             best_score = score
             best_mapping = mapping
     print(f"\n  🏆 Selected run with score {best_score}")
+    if best_mapping is None:
+        print(f"  ⚠️  All {num_runs} LLM runs returned empty results — check DEEPSEEK_API_KEY and model availability")
     return best_mapping if best_mapping else {}
 
 

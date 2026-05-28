@@ -1,6 +1,6 @@
 ---
 name: canvas-storyboard
-description: "Stage 3: 两步流程 — (A) 原剧本匹配画布节点产出原版分镜, (B) 在原版映射基础上替换 prompt 台词产出改写分镜。两阶段匹配: fuzzy_match (free, ~89%) + LLM semantic (deepseek, 补全至100%)。Use when: 'match to canvas', '画布匹配', 'storyboard with canvas', '分镜故事板', 'map rewrites to video nodes'."
+description: "Stage 3: LLM e2e匹配 — 用 Rule A (上下文连续性) + Rule B (废片剔除) 评分的 LLM 端到端匹配,将剧本台词映射到画布视频节点。Supports multi-run voting (--llm-runs N) for higher accuracy. Use when: 'match to canvas', '画布匹配', 'storyboard with canvas', '分镜故事板', 'map rewrites to video nodes'."
 metadata:
   requires:
     bins: ["python3"]
@@ -15,22 +15,23 @@ metadata:
 
 ```
 Step A (原版)                          Step B (改写版)
-原剧本 JSON → 两阶段匹配               原版映射(复用) + 改写台词 JSON
-  ├─ fuzzy_match (89%, free)           → prompt 中替换原台词
-  └─ LLM semantic (11%, ~$0.0002)      → 改写版分镜
-  → 100% 原版分镜
+原剧本 JSON → LLM e2e 匹配             原版映射(复用) + 改写台词 JSON
+  ├─ 单次匹配 (默认)                    → prompt 中替换原台词
+  └─ 多次投票 (--llm-runs 5)            → 改写版分镜
+  → 原版分镜
 ```
 
-**两阶段匹配架构**：
+**LLM 端到端匹配架构**：
 
-| 阶段 | 方法 | 命中率 | 成本 |
-|---|---|---|---|
-| Stage 1 | `fuzzy_match_score`（子串→滑窗→词命中） | ~89% | 免费 |
-| Stage 2 | LLM 语义匹配（`deepseek-chat`） | 补全至 100% | ~$0.0002/ep |
+| 配置 | 方法 | 质量保证 |
+|---|---|---|
+| 默认 (1次) | `llm_end_to_end_match` | Rule A/B 提示词约束 |
+| `--llm-runs 5` | 5 次匹配 + `score_mapping` 投票 | 每次随机打乱节点顺序，取最高分 |
 
 **核心设计**：
-- 匹配同时使用**台词原文**和**场景描述**（`scene_description`），中文匹配中文
-- LLM 处理 ASR 转录偏差（`"Face test okay"` ↔ `"扫脸认证"`）
+- **Rule A (上下文连续性)**: Line N → Node X 暗示 Line N+1 → Node X 或 X+1，打破时间线的节点被排除
+- **Rule B (废片剔除)**: `has_video=false` 的副本节点优先级低于 `has_video=true`，连续台词不跨副本节点
+- 匹配同时使用**台词原文**和**场景描述**，LLM 处理 ASR 偏差和跨语言匹配
 - 改写版**不重新匹配**，复用原版 `line_id → 节点` 映射
 - 改写版只改 prompt 中的台词，不改映射关系、参考图、视频 URL
 
@@ -70,19 +71,24 @@ python3 skills/canvas-storyboard/match_to_canvas.py \
 | `--canvas` | ✅ | 画布 shareId 或本地 JSON |
 | `--output` | ✅ | 输出 markdown 路径 |
 | `--rewrite` | ❌ | Stage 2 改写 JSON（不提供则产出原版） |
-| `--llm` | ❌ | 启用 LLM 语义匹配补全未映射行（默认 false） |
-| `--min-score` | ❌ | fuzzy_match 最低分数阈值（默认 55） |
+| `--llm-runs` | ❌ | LLM 投票轮数（默认 5，设 1 则单次匹配） |
 
 ## Step A: 原版映射逻辑
 
-### 两阶段匹配
+### LLM 端到端匹配
 
-| 阶段 | 方法 | 命中率 | 成本 |
-|---|---|---|---|
-| Stage 1 | `fuzzy_match_score`（子串→滑窗→词命中）+ scene_description 辅助 | ~89% | 免费 |
-| Stage 2 | LLM 语义（`deepseek-chat`）处理 ASR 偏差和短台词 | 补全至 100% | ~$0.0002/ep |
+LLM 一次性接收全部节点和台词，通过优化后的 system prompt（Rule A/B 评分约束）进行全局匹配。
 
-Stage 1 对每行（台词 + scene_description）与全部 114 视频节点 prompt 比对，取最高分+最新节点。Stage 2 仅对 Stage 1 未命中的行调用 LLM，一次性提交全部未匹配行+全部节点摘要。
+| 规则 | 说明 |
+|---|---|
+| Rule A | 上下文连续性：Line N → Node X 暗示 Line N+1 → Node X 或 X+1 |
+| Rule B | 废片剔除：`has_video=false` 的副本优先级低于 `has_video=true` |
+
+**评分函数** `score_mapping()` 在投票模式下用于选优：
+- 未匹配行: -100/行
+- Rule A 违规（同镜内节点跳跃 >5）: -30/次
+- Rule B 违规（选了废片而非成片）: -20/次
+- 匹配奖励: +5/行
 
 ### 原版 storyboard 输出格式
 
@@ -136,7 +142,7 @@ Stage 1 对每行（台词 + scene_description）与全部 114 视频节点 prom
 
 | 限制 | 缓解 |
 |---|---|
-| 极短对话（<5 字符） | Stage 2 LLM 语义匹配接手 |
-| ASR 转录偏差（措辞不同） | Stage 2 LLM 语义匹配接手 |
-| 画布 API 不稳定（SSL/IncompleteRead） | 使用本地缓存的 `canvas_data.json` |
-| LLM 依赖 `--llm` | 需 `DEEPSEEK_API_KEY`（从 `~/workspace/lingolens/backend/.env` 加载） |
+| ASR 转录偏差（措辞不同） | LLM 语义匹配 + Rule A/B 评分 |
+| 画布含废片副本 | Rule B 剔除 `has_video=false` 副本 |
+| 大 Context 下 LLM "Lost in the Middle" | 投票时每轮随机打乱节点顺序 |
+| LLM 依赖 `DEEPSEEK_API_KEY` | 从 `~/workspace/lingolens/backend/.env` 加载 |

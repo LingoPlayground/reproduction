@@ -98,30 +98,24 @@ def parse_storyboard(path: str) -> list[dict]:
 
 def build_original_node_videos(canvas_path: str, script_path: str) -> dict:
     sys.path.insert(0, str(Path("skills/canvas-storyboard").resolve()))
-    from match_to_canvas import extract_lines_from_script, video_nodes, parse_nodes, build_original_storyboard_map
+    from match_to_canvas import video_nodes, parse_nodes
 
     with open(canvas_path) as f:
         canvas = json.load(f)
-    lines = extract_lines_from_script(script_path)
     nodes = video_nodes(parse_nodes(canvas))
-    mapping = build_original_storyboard_map(lines, nodes, 55)
 
     info = {}
-    for line in lines:
-        entry = mapping.get(line["line_id"])
-        if not entry or not entry[0]:
-            continue
-        node = entry[0]
+    for node in nodes:
         nk = node["nodeKey"]
-        # Store by nodeKey AND by name (for backward compat)
+        d = node["data_obj"]
+        s = d.get("params", {}).get("settings", {})
+        entry = {
+            "video_url": (d.get("url", [None]) or [None])[0],
+            "duration": int(s.get("duration", 15)),
+        }
         for key in [nk, nk[:12], node["name"]]:
             if key not in info:
-                d = node["data_obj"]
-                s = d.get("params", {}).get("settings", {})
-                info[key] = {
-                    "video_url": (d.get("url", [None]) or [None])[0],
-                    "duration": int(s.get("duration", 15)),
-                }
+                info[key] = entry
     return info
 
 
