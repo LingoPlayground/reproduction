@@ -1067,4 +1067,4 @@ utterance:
 经过 `normalizer.py::_enrich_lines_from_asr()` 处理后：
 - `line.start_seconds = 2.83`（取 utterance.start_time / 1000）
 - `line.end_seconds = 4.19`（取 utterance.end_time / 1000）
-- 词级时间戳可通过 `asr_word_start_seconds` / `asr_word_end_seconds` 获取（帧精度）
+- 词级时间戳可通过 `asr_word_start_seconds` / `asr_word_end_seconds` 获取（帧精度）—— ⚠️ 字段存在但当前未被填充（始终为 None），见 §2.1 警示。需在 `normalizer.py` 中额外将 `words[]` 数据写入后方可启用
