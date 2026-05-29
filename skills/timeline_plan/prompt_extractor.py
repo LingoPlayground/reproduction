@@ -80,9 +80,11 @@ Style settings can appear ANYWHERE — at the top, bottom, or interspersed betwe
 
 3. **Replace original dialogue with rewritten dialogue** in the kept scene descriptions. The rewritten text may be longer or shorter — adjust naturally. Preserve the speaker attribution format (e.g., "Donny: " before the dialogue).
 
-4. **Maintain the original structure and formatting** as much as possible.
+4. **Only keep visual content directly related to the rewritten dialogue.** Within each kept section, retain camera angles, character expressions, and actions that describe the moments when the dialogue is spoken. Remove scene setup, background descriptions, transitional filler, and any visual content that does not directly involve the speaking characters during their dialogue. The output should generate a tight clip focused on the dialogue moments — not the full scene.
 
-5. If none of the scene descriptions match the rewrite lines, output the original prompt unchanged.
+5. **Maintain the original structure and formatting** as much as possible.
+
+6. If none of the scene descriptions match the rewrite lines, output the original prompt unchanged.
 
 Output ONLY the rewritten prompt text — no explanations, no JSON wrappers."""
 
