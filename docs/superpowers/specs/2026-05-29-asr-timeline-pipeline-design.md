@@ -41,25 +41,38 @@
 # ScriptShot — 多模态 LLM 分析视频帧 + ASR 得出
 ScriptShot:
   shot_number: int
-  start_seconds: float      # 镜头逻辑开始时间
-  end_seconds: float        # 镜头逻辑结束时间
-  scene_description: str    # LLM 理解后的场景描述
-  shot_type: str            # 镜头类型
-  camera_movement: str      # 运镜方式
-  mood: str                 # 情绪氛围
-  lines: List[ScriptLine]   # 该镜头内的台词
+  start_seconds: float       # 镜头逻辑开始时间
+  end_seconds: float         # 镜头逻辑结束时间
+  location: Optional[str]    # 场景位置名称
+  scene_description: str     # LLM 理解后的场景描述
+  shot_type: Optional[str]   # 镜头类型
+  camera_movement: Optional[str]  # 运镜方式
+  mood: Optional[str]        # 情绪氛围
+  lines: List[ScriptLine]    # 该镜头内的台词
 
 # ScriptLine — ASR 精确时间戳填充
 ScriptLine:
   line_id: str
-  start_seconds: float         # ASR 开始时间（ms精度）
-  end_seconds: float           # ASR 结束时间
-  asr_utterance_index: int     # 对应 ASR utterance 索引
-  asr_word_start_seconds: float   # 词级开始时间
-  asr_word_end_seconds: float     # 词级结束时间
+  parent_line_id: Optional[str]  # 分割后的父行ID
+  role_id: Optional[str]
+  start_seconds: float           # ASR 开始时间（ms精度，_enrich_lines_from_asr 填充）
+  end_seconds: float             # ASR 结束时间（_enrich_lines_from_asr 填充）
+  asr_utterance_index: int       # 对应 ASR utterance 索引
+  asr_word_start_index: Optional[int]
+  asr_word_end_index: Optional[int]
+  asr_word_start_seconds: Optional[float]  # ⚠️ 字段存在但 normalizer 从未填充，始终为 None
+  asr_word_end_seconds: Optional[float]    # ⚠️ 同上
   speaker: str
   dialogue: str
+  action: Optional[str]
+  speech_mode: SpeechMode
 ```
+
+**⚠️ 关键发现：`asr_word_*` 字段是"空承诺"**
+
+`normalizer.py` 的 `_enrich_lines_from_asr()` (L112-145) 只填充了 `dialogue`、`start_seconds`、`end_seconds` 三个 utterance 级别的字段。词级时间戳虽然在 ASR utterances 的 `words[]` 数组中可用，但正常化流程**没有任何一步**将它们写入 `asr_word_start_seconds` / `asr_word_end_seconds`。`splitter.py` 虽然使用词级数据来切分长句，但切分后只覆盖了 `start_seconds` / `end_seconds`，未写入 `asr_word_*`。
+
+**影响**：新 Pipeline 若需要词级精度的剪辑信号，需先在 Stage 1 中修复此问题（见 §4.1 补充说明）。当前行级 `start_seconds`/`end_seconds` 精度（毫秒级）已足够驱动剪辑，词级字段作为未来增强项。
 
 但在 Stage 3 (`match_to_canvas.py`) 的 `extract_lines_from_script()`（第 95-113 行）中，仅提取了 `start_seconds` 和 `end_seconds`，**完全忽略了 `asr_*` 字段和 `ScriptShot` 结构**，转而使用纯文本匹配。
 
@@ -77,8 +90,8 @@ ScriptLine:
 | 资产 | 位置 | 精度 | 当前使用状态 |
 |------|------|------|------------|
 | ScriptShot 边界 | Stage 1 输出 | LLM + 视觉分析 | ❌ Stage 3 未使用 |
-| ASR 行级时间戳 | Stage 1 输出 | 毫秒级 | ❌ Stage 3 未使用 |
-| ASR 词级时间戳 | Stage 1 输出 | 帧级 | ❌ 全 Pipeline 未使用 |
+| ASR 行级时间戳 | Stage 1 输出 | 毫秒级（已填充） | ❌ Stage 3 未使用 |
+| ASR 词级时间戳 | Stage 1 输出 | 帧级（字段存在但未填充，始终 None） | ❌ 暂不可用，需先修复 normalizer.py |
 | 改写台词 | Stage 2 输出 | — | ✅ Stage 3 使用 |
 | 画布节点 prompt | LibLib API | — | ✅ Stage 3 使用 |
 | 画布节点参考图 | LibLib API | — | ✅ Stage 4 使用 |
@@ -100,11 +113,14 @@ Stage 4 (重写):  视频组装 → final.mp4
 
 ### 3.2 数据流
 
+> **数据模型统一说明**：Stage 1 产出的是 `VideoScriptOutput`（lingolens 模型），当前 Stage 3 消费的是 `ScriptInput`（shakespeare 模型，丢失了 `asr_*` 字段和 ScriptShot 元数据）。新 Stage 3 直接消费 `VideoScriptOutput`，保留完整数据结构。
+
 ```
 ┌─ Stage 1 ─────────────────────────────────────────────────────┐
-│ 原剧视频.mp4 + utterances[] → Multimodal LLM → ScriptOutput   │
+│ 原剧视频.mp4 + utterances[] → Multimodal LLM                  │
+│ → VideoScriptOutput（lingolens 模型，保留完整 asr_* 字段）    │
 │   shots[]{ shot_number, start_s, end_s, scene_desc, lines[] } │
-│   lines[]{ line_id, dialogue, start_s, end_s, asr_word_* }    │
+│   lines[]{ line_id, dialogue, start_s, end_s, asr_utr_idx }   │
 └────────────────────────────┬──────────────────────────────────┘
                              │
 ┌─ Stage 1b (新增) ─────────┼──────────────────────────────────┐
@@ -164,7 +180,7 @@ Stage 4 (重写):  视频组装 → final.mp4
 - `script.shots[]`：每个 shot 的边界、场景描述、台词列表
 - `script.shots[].lines[]`：每行台词的精确 ASR 时间戳
 
-**无需任何改动**。
+**改动**：仅需在 lingolens 侧修复 `_enrich_lines_from_asr()`，将 ASR utterances 的 `words[]` 数据写入 `asr_word_start_seconds` / `asr_word_end_seconds`（当前字段存在但始终为 None）。这是**可选增强**——行级时间戳已足够驱动剪辑；词级时间戳为未来帧级精度需求做准备。
 
 ### 4.2 Stage 1b：场景检测增强（新增）
 
@@ -179,6 +195,8 @@ Stage 4 (重写):  视频组装 → final.mp4
 
 **任务 A：原剧视频镜头检测**
 
+> **API 说明**：PySceneDetect 的 `get_scene_list()` 返回 `list[tuple[TimeCode, TimeCode]]`（每个元素是 (start, end) 二元组），而非 `(scene, score)`。置信度需从 detector 的事件统计中自行计算。以下代码示例中的 `confidence` 为简化占位值。
+
 ```python
 from scenedetect import open_video, SceneManager
 from scenedetect.detectors import ContentDetector, AdaptiveDetector
@@ -186,18 +204,26 @@ from scenedetect.detectors import ContentDetector, AdaptiveDetector
 def detect_scene_boundaries(video_path: str) -> list[CutPoint]:
     """
     返回原剧视频的镜头切换点列表。
-    使用 ContentDetector（HSV色彩直方图差异）+ AdaptiveDetector（自适应阈值）。
+    使用 ContentDetector（HSV 色彩直方图差异）+ AdaptiveDetector（自适应阈值）。
     """
     video = open_video(video_path)
     scene_manager = SceneManager()
-    scene_manager.add_detector(ContentDetector(threshold=27.0))
+    
+    # AI 生成视频画面过渡更平滑，阈值较实拍视频放宽
+    # 实拍视频默认：27.0；AI 生成视频建议：15.0-22.0
+    scene_manager.add_detector(ContentDetector(threshold=20.0))
     scene_manager.add_detector(AdaptiveDetector())
     scene_manager.detect_scenes(video)
+    
+    # get_scene_list() 返回 [(start_TimeCode, end_TimeCode), ...]
+    scene_list = scene_manager.get_scene_list()
     return [
-        CutPoint(time_sec=scene[0].get_seconds(), confidence=score)
-        for scene, score in scene_manager.get_scene_list()
+        CutPoint(time_sec=cut[0].get_seconds(), confidence=1.0)
+        for cut in scene_list
     ]
 ```
+
+> **阈值调优**：`ContentDetector(threshold=20.0)` 适用于 AI 生成视频（画面过渡比实拍更平滑）。若漏检过多，降低至 15.0；若误检过多（同一镜头内检测出切换），升高至 25.0。推荐在项目配置文件中暴露此参数。
 
 **任务 B：画布节点视频内部分段**
 
@@ -346,6 +372,14 @@ def match_canvas_node(
 
 对于目标 shot，需要从长 prompt 中**提取与之对应的片段**：
 
+**前置验证：时间轴对齐确认**
+
+画布节点的 prompt 内时间顺序**不一定**与 ScriptShot 的剧情时间顺序一致（可能是拍摄顺序、B-roll 混合）。在提取片段前，用 PySceneDetect 分析节点视频的时间戳（见 §5.3 角色 2），与 ScriptShot 的 ASR 时间戳交叉比对，确认两者的时间轴对应关系：
+
+- **对齐**：prompt 中的「镜头 N」与 ScriptShot N 一一对应 → 直接做结构化提取
+- **错位**：prompt 中的顺序与剧情顺序不一致 → 降级到 Level 2（LLM 语义分段）或 Level 3（关键词定位）
+- **不可判定**：节点视频与 ScriptShot 无对应关系 → 降级到 Level 4（全新生成）
+
 ```python
 def extract_prompt_fragment(
     full_prompt: str,
@@ -463,30 +497,77 @@ async def assemble_video(plan: TimelinePlan, output_path: str):
             await seedance_generate(
                 images=item.ref_images,
                 prompt=item.rewritten_prompt,
-                duration=item.duration_sec,
+                duration=item.seedance_duration,  # 使用归一化后的时长
+                audio=True,  # 生成音频（同 generate_videos.py L201）
                 output=seg_path
             )
             segment_paths.append(seg_path)
     
-    # ffmpeg concat 拼接所有片段
-    concat_list = write_concat_file(segment_paths)
+    # 编码统一化 + 音频归一化后再拼接
+    normalized_paths = normalize_segments(segment_paths)
+    concat_list = write_concat_file(normalized_paths)
     ffmpeg_concat(concat_list, output_path)
 ```
 
-#### 4.5.2 seedance 参数
+#### 4.5.2 Seedance 时长归一化
 
-沿用现有的 seedance 2.0 fast 配置（来自 `generate_videos.py`），但增加 `duration` 参数控制生成长度：
+seedance 2.0 fast 的 `duration` 参数有步长约束（通常为整数秒，范围 5-30 秒）。若 `shot.duration_sec = 3.7s` 或 `12.3s`，需做归一化处理：
 
 ```python
-seedance_params = {
-    "model": "seedance_2_0_fast",
-    "duration": item.duration_sec,  # 按 shot 的实际时长生成
-    "images": item.ref_images,
-    "prompt": item.rewritten_prompt,
-}
+def normalize_seedance_duration(target_sec: float) -> int:
+    """
+    四舍五入到最接近的整数秒，并 clamp 到 [5, 30] 范围。
+    记录 original_duration 与 seedance_duration 的偏差，用于 QA 评估。
+    """
+    return max(5, min(30, round(target_sec)))
 ```
 
-#### 4.5.3 ffmpeg 剪接命令
+若目标 shot 时长超出 [5, 30] 范围（如超长镜头），拆分为多个 seedance 调用或降级为 `source="original"`。
+
+#### 4.5.3 编码统一化（解决 -c copy 兼容性问题）
+
+`-c copy` 要求所有 segment 编码参数完全一致。seedance 生成的视频和 ffmpeg trim 的原剧片段可能有不同的 `h264_profile`、`pix_fmt` 或 `keyint`，直接 concat 可能失败或产生跳帧。
+
+```python
+def normalize_segments(segment_paths: list[str]) -> list[str]:
+    """将所有 segment 统一转码为相同编码参数后返回新路径列表"""
+    normalized = []
+    for seg_path in segment_paths:
+        norm_path = seg_path.replace(".mp4", "_norm.mp4")
+        subprocess.run([
+            "ffmpeg", "-y", "-i", seg_path,
+            "-c:v", "libx264", "-profile:v", "high",
+            "-pix_fmt", "yuv420p", "-crf", "18",
+            "-c:a", "aac", "-ar", "44100", "-b:a", "192k",
+            norm_path
+        ], check=True)
+        normalized.append(norm_path)
+    return normalized
+```
+
+#### 4.5.4 音频连续性处理
+
+`source="original"` 片段的音频来自原剧，`source="seedance"` 的音频来自 seedance。两者在 concat 前需要音量一致：
+
+```python
+def normalize_audio_loudness(segments: list[str]) -> list[str]:
+    """使用 EBU R128 loudnorm filter 统一所有片段的响度"""
+    normalized = []
+    for seg_path in segments:
+        norm_path = seg_path.replace(".mp4", "_loud.mp4")
+        subprocess.run([
+            "ffmpeg", "-y", "-i", seg_path,
+            "-af", "loudnorm=I=-16:LRA=11:TP=-1.5",
+            "-c:v", "copy",  # 视频流不变
+            norm_path
+        ], check=True)
+        normalized.append(norm_path)
+    return normalized
+```
+
+建议将 §4.5.3 编码统一化和 §4.5.4 音频归一化合入同一个 `normalize_segments()` 步骤，避免两次转码。
+
+#### 4.5.5 ffmpeg 拼接
 
 ```bash
 # 截取原剧片段
@@ -580,7 +661,8 @@ def match_canvas_node_for_shot(
     为一个 ScriptShot 匹配画布节点。
     返回 (节点, 置信度) 或 None。
     """
-    # Step 1: 文本重叠度评分
+    # Step 1: 文本重叠度评分（复用 pipeline.py 的 fuzzy_match_score 逻辑）
+    # 该函数经多轮迭代，对 ASR 噪声（标点/中英混合/语气词）有较好容错性
     shot_dialogue_text = " ".join(line.dialogue for line in shot.lines)
     candidates = []
     for node in nodes:
@@ -664,22 +746,29 @@ def extract_and_rewrite_prompt(
 def determine_cut_points(
     script_shots: list[ScriptShot],
     scene_cuts: list[CutPoint],
+    video_duration: float,
     tolerance: float = 0.5
 ) -> list[tuple[float, float]]:
     """
-    输入：ScriptShot 列表 + PySceneDetect 切换点列表
+    输入：ScriptShot 列表 + PySceneDetect 切换点列表 + 视频总时长
     输出：每个 shot 的精确 (start, end) 时间
     """
     results = []
     
     for shot in script_shots:
+        # 边界合理性检查：clamp 到 [0, video_duration] 范围内
+        raw_start = max(0.0, min(shot.start_seconds, video_duration))
+        raw_end = max(0.0, min(shot.end_seconds, video_duration))
+        if raw_end <= raw_start:
+            raw_end = min(raw_start + 1.0, video_duration)  # 最小 1 秒
+        
         # 找 start 最近的 PySceneDetect 点
-        start_cut = find_nearest_cut(scene_cuts, shot.start_seconds, tolerance)
-        final_start = start_cut.time_sec if start_cut else shot.start_seconds
+        start_cut = find_nearest_cut(scene_cuts, raw_start, tolerance)
+        final_start = start_cut.time_sec if start_cut else raw_start
         
         # 找 end 最近的 PySceneDetect 点
-        end_cut = find_nearest_cut(scene_cuts, shot.end_seconds, tolerance)
-        final_end = end_cut.time_sec if end_cut else shot.end_seconds
+        end_cut = find_nearest_cut(scene_cuts, raw_end, tolerance)
+        final_end = end_cut.time_sec if end_cut else raw_end
         
         results.append((final_start, final_end))
     
@@ -757,12 +846,16 @@ class TimelinePlanItem:
     rewritten_prompt: Optional[str] = None
     matched_node_id: Optional[str] = None
     match_confidence: Optional[float] = None
+    degradation_level: int = 0        # 降级层级（0=最优路径, 1-3=降级, 对应 §9.4）
+    seedance_duration: Optional[int] = None  # seedance 归一化后的时长（整数秒）
+    original_duration: Optional[float] = None  # 原始 shot 时长（用于计算偏差）
 
 @dataclass
 class TimelinePlan:
     """完整的剪辑计划"""
     title: str
     level: str  # CEFR 等级
+    pipeline_version: str = "2.0"      # pipeline 版本号，区分不同版本的 plan
     original_video_path: str
     total_duration_sec: float
     items: list[TimelinePlanItem]
@@ -783,8 +876,8 @@ class Stage3Input:
     keyframes: list[KeyFrame]
     node_cut_points: dict[str, list[CutPoint]]  # node_id → 内部切换点
     
-    # 来自 Stage 2
-    rewrite_json: dict  # {level, lines[]}
+    # 来自 Stage 2（格式：{"level": str, "lines": [{line_id, original, rewritten, start_seconds, end_seconds, shot_scene}]}）
+    rewrite_json: dict  # 结构见 §4.3 示例
     
     # 外部数据
     canvas_nodes: list[CanvasNode]  # 从 LibLib API
@@ -794,6 +887,10 @@ class Stage3Input:
 ---
 
 ## 9. 错误处理与降级策略
+
+### 9.0 降级日志
+
+所有降级事件需写入 `TimelinePlanItem.degradation_level`（0=最优路径，1-3=逐级降级），并同步输出到 `timeline_plan.json` 的 debug 段。seedance 生成质量的自动化检查：提取生成视频的首帧和末帧，与参考图做结构相似度（SSIM）比对，若 SSIM < 0.4 则标记为质量可疑，降级使用原剧片段。
 
 ### 9.1 画布节点匹配失败
 
@@ -843,8 +940,8 @@ class Stage3Input:
 | `skills/timeline-plan/generate_plan.py` | Stage 3: 剪辑计划生成（替代 match_to_canvas.py） | ~400 |
 | `skills/timeline-plan/prompt_extractor.py` | Stage 3 子模块: Prompt 片段提取 | ~250 |
 | `skills/timeline-plan/cut_fusion.py` | Stage 3 子模块: 剪辑点融合 | ~150 |
-| `skills/timeline-plan/models.py` | Stage 3 数据模型 | ~80 |
-| `skills/video-assembly/assemble.py` | Stage 4: 视频组装（替代 generate_videos.py） | ~250 |
+| `skills/timeline-plan/models.py` | Stage 3 数据模型（含 6+ dataclass、类型定义、默认值） | ~150 |
+| `skills/video-assembly/assemble.py` | Stage 4: 视频组装（含编码统一化、音频归一化、时长适配） | ~400 |
 
 ### 10.2 修改文件
 
@@ -866,20 +963,21 @@ pip install scenedetect[opencv]  # PySceneDetect
 
 ### 11.1 渐进式迁移
 
-新旧方案可以**共存**。通过在 Stage 3 入口处增加一个 `--mode` 参数：
+新旧方案可以**共存**。通过在 Stage 3 入口处增加一个 `--mode` 参数。两种模式的数据格式**互不兼容**——legacy 输出 storyboard markdown（被旧的 `generate_videos.py` 消费），timeline 输出 `TimelinePlan` JSON（被新的 `assemble.py` 消费）。
 
 ```bash
-# 旧方案（文本匹配）
+# 旧方案（文本匹配 → storyboard → generate_videos.py）
 python3 skills/canvas-storyboard/match_to_canvas.py --mode legacy ...
 
-# 新方案（时间轴驱动）
+# 新方案（时间轴驱动 → TimelinePlan → assemble.py）
 python3 skills/timeline-plan/generate_plan.py --mode timeline ...
 ```
 
 ### 11.2 旧代码保留
 
-- `match_to_canvas.py` → 保留不动，`--mode legacy` 时使用
-- `generate_videos.py` → 保留 seedance API 调用逻辑，`assemble.py` 中 import 复用
+- `match_to_canvas.py` → 保留不动，`--mode legacy` 时使用，输出 storyboard markdown
+- `generate_videos.py` → 保留不动，仅 legacy 模式使用，消费 storyboard markdown
+- `assemble.py` → 仅 timeline 模式使用，消费 `TimelinePlan` JSON
 - `pipeline.py` → 保留不动（最早的 fuzzy_match 原型）
 
 ---
@@ -890,18 +988,32 @@ python3 skills/timeline-plan/generate_plan.py --mode timeline ...
 
 | 指标 | 目标 | 验证方式 |
 |------|------|---------|
-| 剪辑点准确度 | ±0.1s 以内 | 对比 LLM 边界 → 最终 cut 的偏移量 |
-| 画布节点匹配率 | ≥80% 的 shot 匹配到节点 | 统计 TimelinePlan 中 `matched_node_id` 非空比例 |
+| 剪辑点准确度 | ±0.2s 以内 | 对比 LLM 边界 → 最终 cut 的偏移量（放宽至 ±0.2s，约 6 帧@30fps，以覆盖淡入淡出等过渡场景） |
+| 画布节点匹配率 | ≥80% 的 shot 匹配到节点 | 统计 TimelinePlan 中 `matched_node_id` 非空比例，同时跟踪 `match_confidence` 的均值和中位数 |
 | seedance 生成成功率 | ≥90% | API 调用成功率 |
-| 最终视频完整性 | 无跳帧、无黑屏、无重复 | 人工质检 + ffmpeg 帧校验 |
+| seedance 时长偏差 | < 10% | `|seedance_duration - original_duration| / original_duration` |
+| 最终视频完整性 | 无跳帧、无黑屏、无静音段 | 人工质检 + ffmpeg 自动化检测（见 §12.3） |
 
 ### 12.2 Debug 输出
 
 Stage 3 产出 `timeline_plan.json` 和 `timeline_plan.md`（人类可读），包含：
 - 每个 shot 的匹配置信度
-- 采用的降级策略（Level 1-4）
+- 采用的降级策略（`degradation_level`: 0-3）
 - 最终剪辑点与原始 LLM 边界的偏移量
 - PySceneDetect 检测到的所有切换点
+
+### 12.3 自动化质量检测
+
+```bash
+# 黑帧检测（blackdetect filter）
+ffmpeg -i final.mp4 -vf "blackdetect=d=0.5:pix_th=0.10" -f null -
+
+# 静音检测（silencedetect filter）
+ffmpeg -i final.mp4 -af "silencedetect=n=-50dB:d=1.0" -f null -
+
+# 帧完整性校验
+ffmpeg -v error -i final.mp4 -f null - 2>&1 | grep -c "error"
+```
 
 ---
 
