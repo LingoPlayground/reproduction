@@ -6,7 +6,26 @@ to parse this structure and produce clean rewritten prompts for seedance.
 """
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any, List
+
+
+# ── Module-level env loading (once, not per-call) ──────────────────
+
+def _load_env():
+    for env_path in [
+        str(Path("~/workspace/lingolens/backend/.env").expanduser()),
+        str(Path("~/workspace/shakespeare/.env").expanduser()),
+    ]:
+        if Path(env_path).exists():
+            for line in open(env_path):
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+
+_load_env()
 
 
 # ── LLM-based prompt rewriting ─────────────────────────────────────
@@ -78,21 +97,7 @@ Output ONLY the rewritten prompt text — no explanations, no JSON wrappers."""
 
 Output the rewritten prompt."""
 
-    # Load API key
-    import os as _os
-    from pathlib import Path as _Path
-    for env_path in [
-        str(_Path("~/workspace/lingolens/backend/.env").expanduser()),
-        str(_Path("~/workspace/shakespeare/.env").expanduser()),
-    ]:
-        if _Path(env_path).exists():
-            for line in open(env_path):
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    _os.environ.setdefault(k.strip(), v.strip())
-
-    api_key = _os.environ.get("DEEPSEEK_API_KEY", "")
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
         return ""
 
@@ -100,10 +105,10 @@ Output the rewritten prompt."""
         from openai import OpenAI
         client = OpenAI(
             api_key=api_key,
-            base_url=_os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
         )
         resp = client.chat.completions.create(
-            model=_os.environ.get("LLM_MATCH_MODEL", "deepseek-v4-flash"),
+            model=os.environ.get("LLM_MATCH_MODEL", "deepseek-v4-flash"),
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg},

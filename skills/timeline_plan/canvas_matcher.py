@@ -8,11 +8,31 @@ API:
 """
 from __future__ import annotations
 
+import os
 import re
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from skills.timeline_plan.models import CanvasNode
+
+
+# ── Module-level env loading (once, not per-call) ──────────────────
+
+def _load_env():
+    import os as _os
+    from pathlib import Path as _Path
+    for env_path in [
+        str(_Path("~/workspace/lingolens/backend/.env").expanduser()),
+        str(_Path("~/workspace/shakespeare/.env").expanduser()),
+    ]:
+        if _Path(env_path).exists():
+            for line in open(env_path):
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    _os.environ.setdefault(k.strip(), v.strip())
+
+_load_env()
 
 
 # ── Quality scoring helpers ───────────────────────────────────────────
@@ -146,6 +166,11 @@ def _llm_match_run(
         prompt = node.prompt
         if len(prompt) > 3000:
             prompt = prompt[:3000] + "..."
+            import logging
+            logging.getLogger(__name__).warning(
+                "Truncating prompt for node %s from %d → %d chars — dialogue near end may be lost",
+                node.node_id, len(node.prompt), 3000
+            )
         node_entries.append({
             "id": idx,
             "node_id": node.node_id,
@@ -212,21 +237,7 @@ If no node matches a line, omit it from the output."""
 
 Output the mapping. First identify dialogue in each node's prompt, then match."""
 
-    # Load API key
-    import os as _os
-    from pathlib import Path as _Path
-    for env_path in [
-        str(_Path("~/workspace/lingolens/backend/.env").expanduser()),
-        str(_Path("~/workspace/shakespeare/.env").expanduser()),
-    ]:
-        if _Path(env_path).exists():
-            for line in open(env_path):
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    _os.environ.setdefault(k.strip(), v.strip())
-
-    api_key = _os.environ.get("DEEPSEEK_API_KEY", "")
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
         return None
 
@@ -234,10 +245,10 @@ Output the mapping. First identify dialogue in each node's prompt, then match.""
         from openai import OpenAI
         client = OpenAI(
             api_key=api_key,
-            base_url=_os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
         )
         resp = client.chat.completions.create(
-            model=_os.environ.get("LLM_MATCH_MODEL", "deepseek-v4-flash"),
+            model=os.environ.get("LLM_MATCH_MODEL", "deepseek-v4-flash"),
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg},

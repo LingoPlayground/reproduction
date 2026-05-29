@@ -1,0 +1,90 @@
+<h2>当前 vs 新方案：核心思路对比</h2>
+<p class="subtitle">旧方案的问题：把台词文本匹配到画布节点（含废片），匹配不可靠</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">🔴 旧方案（当前）</div>
+    <div class="mockup-body" style="font-size:13px; line-height:1.6; padding:12px;">
+      <strong>Step 1:</strong> 视频 → ASR → 剧本 JSON<br>
+      <small style="color:#888">(有时序信息，但后续不用)</small><br><br>
+      <strong>Step 2:</strong> 剧本 JSON → 改写 JSON<br><br>
+      <strong>Step 3:</strong> 台词 <span style="color:#e53e3e;">→文本匹配→</span> 画布节点<br>
+      <small style="color:#e53e3e;">⚠️ 画布节点含废片/花絮，纯文本匹配不可靠</small><br><br>
+      <strong>Step 4:</strong> 匹配到的节点 → seedance生成 → ffmpeg拼接<br>
+      <small style="color:#888">(依赖节点匹配质量)</small>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">🟢 新方案（提议）</div>
+    <div class="mockup-body" style="font-size:13px; line-height:1.6; padding:12px;">
+      <strong>Step 1:</strong> 视频 → ASR → 剧本 JSON<br>
+      <small style="color:#38a169;">✅ 时序信息是核心，全程使用</small><br><br>
+      <strong>Step 2:</strong> 剧本 JSON → 改写 JSON<br><br>
+      <strong>Step 3:</strong> <span style="color:#38a169;">ASR 时间戳 → 确定剪辑位置</span><br>
+      + 场景检测(PySceneDetect)辅助<br>
+      <small style="color:#38a169;">✅ 原剧视频是基础，不依赖画布节点匹配</small><br><br>
+      <strong>Step 4:</strong> 画布节点 <span style="color:#3182ce;">→参考图+prompt改写→</span> seedance<br>
+      <small style="color:#3182ce;">✅ 只用于视觉参考，不是视频源</small><br><br>
+      <strong>Step 5:</strong> <span style="color:#38a169;">原剧片段 + 新生成片段 → ffmpeg拼接</span>
+    </div>
+  </div>
+</div>
+
+<h3 style="margin-top:32px;">关键区别</h3>
+
+<div class="section">
+  <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <tr style="background:var(--bg-secondary);">
+      <th style="padding:8px; text-align:left; border-bottom:1px solid var(--border);">维度</th>
+      <th style="padding:8px; text-align:left; border-bottom:1px solid var(--border);">旧方案</th>
+      <th style="padding:8px; text-align:left; border-bottom:1px solid var(--border);">新方案</th>
+    </tr>
+    <tr>
+      <td style="padding:8px; border-bottom:1px solid var(--border);"><strong>视频来源</strong></td>
+      <td style="padding:8px; border-bottom:1px solid var(--border);">画布节点视频</td>
+      <td style="padding:8px; border-bottom:1px solid var(--border); color:var(--accent);">原剧完整视频</td>
+    </tr>
+    <tr>
+      <td style="padding:8px; border-bottom:1px solid var(--border);"><strong>剪辑位置</strong></td>
+      <td style="padding:8px; border-bottom:1px solid var(--border);">由节点匹配决定</td>
+      <td style="padding:8px; border-bottom:1px solid var(--border); color:var(--accent);">由ASR时间戳决定</td>
+    </tr>
+    <tr>
+      <td style="padding:8px; border-bottom:1px solid var(--border);"><strong>画布节点用途</strong></td>
+      <td style="padding:8px; border-bottom:1px solid var(--border);">匹配+生成两个视频</td>
+      <td style="padding:8px; border-bottom:1px solid var(--border); color:var(--accent);">仅参考图+prompt改写</td>
+    </tr>
+    <tr>
+      <td style="padding:8px; border-bottom:1px solid var(--border);"><strong>无改写镜头</strong></td>
+      <td style="padding:8px; border-bottom:1px solid var(--border);">下载画布节点视频</td>
+      <td style="padding:8px; border-bottom:1px solid var(--border); color:var(--accent);">直接截取原剧片段</td>
+    </tr>
+    <tr>
+      <td style="padding:8px; border-bottom:1px solid var(--border);"><strong>废片处理</strong></td>
+      <td style="padding:8px; border-bottom:1px solid var(--border); color:#e53e3e;">LLM猜测剔除</td>
+      <td style="padding:8px; border-bottom:1px solid var(--border); color:var(--accent);">不依赖画布节点，天然规避</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <div class="pros-cons">
+    <div class="pros"><h4>新方案优势</h4>
+      <ul>
+        <li>原剧视频是权威来源，不依赖画布节点质量</li>
+        <li>ASR时间戳是精确的ms级数据，已存在但未使用</li>
+        <li>画布节点仅用于视觉参考，废片不再影响匹配</li>
+        <li>无改写镜头直接复用原剧，生成成本更低</li>
+      </ul>
+    </div>
+    <div class="cons"><h4>需要解决的新问题</h4>
+      <ul>
+        <li>ASR时间戳确定镜头边界是否足够精确？</li>
+        <li>场景检测如何与ASR时间轴融合？</li>
+        <li>画布节点的参考图/prompt如何映射到改写台词？</li>
+        <li>拼接时转场如何处理？</li>
+      </ul>
+    </div>
+  </div>
+</div>

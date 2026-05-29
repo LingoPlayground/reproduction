@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from skills.timeline_plan.models import (
     TimelinePlan, TimelinePlanItem, CanvasNode, CutPoint, KeyFrame, Stage3Input,
+    normalize_seedance_duration,
 )
 from skills.timeline_plan.cut_fusion import determine_cut_points
 from skills.timeline_plan.canvas_matcher import match_lines_to_nodes
@@ -33,10 +34,6 @@ def _shot_needs_rewrite(shot: Any, rewrite_lines: List[Dict]) -> Tuple[bool, Lis
             if str(rl.get("original", "")) != str(rl.get("rewritten", "")):
                 has_change = True
     return has_change, matching
-
-
-def normalize_seedance_duration(target_sec: float) -> int:
-    return max(5, min(30, round(target_sec)))
 
 
 def _collect_ref_images(matched_node: Optional[CanvasNode], keyframes: List[KeyFrame], shot_number: int) -> List[str]:
@@ -257,8 +254,14 @@ def main():
                     reference_images=n.get("reference_images") or n.get("data_obj", {}).get("images", []),
                 ))
 
-    cuts = [CutPoint(time_sec=c["time_sec"], confidence=c.get("confidence", 1.0)) for c in json.load(open(args.cuts))] if args.cuts and Path(args.cuts).exists() else []
-    kfs = [KeyFrame(time_sec=k["time_sec"], image_path=k["image_path"], shot_number=k["shot_number"]) for k in json.load(open(args.keyframes))] if args.keyframes and Path(args.keyframes).exists() else []
+    cuts: List[CutPoint] = []
+    if args.cuts and Path(args.cuts).exists():
+        with open(args.cuts) as f:
+            cuts = [CutPoint(time_sec=c["time_sec"], confidence=c.get("confidence", 1.0)) for c in json.load(f)]
+    kfs: List[KeyFrame] = []
+    if args.keyframes and Path(args.keyframes).exists():
+        with open(args.keyframes) as f:
+            kfs = [KeyFrame(time_sec=k["time_sec"], image_path=k["image_path"], shot_number=k["shot_number"]) for k in json.load(f)]
 
     class _SW:
         class _S:

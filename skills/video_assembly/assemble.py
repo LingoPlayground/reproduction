@@ -16,31 +16,40 @@ from pathlib import Path
 from typing import List
 
 WORK_DIR = Path(__file__).resolve().parents[2] / "generated"
-sys.path.insert(0, str(Path("~/workspace/lingolens/backend").expanduser()))
 
-for env_path in [
-    Path("~/workspace/lingolens/backend/.env").expanduser(),
-    Path("~/workspace/shakespeare/.env").expanduser(),
-]:
-    if env_path.exists():
-        for line in open(env_path):
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+# ── seedance import (lazy, only when lingolens is available) ──────
 
-# Lazy import — only available when lingolens is installed
-try:
-    from utils.aqinfo_seedance import AQInfoSeedanceClient, SeedanceModel, AssetType, SeedanceRatio, SeedanceResolution
-    _seedance_client = AQInfoSeedanceClient()
-    SEEDANCE_AVAILABLE = True
-except ImportError:
-    SEEDANCE_AVAILABLE = False
+def _ensure_seedance_import():
+    """Lazy-import seedance client — only patches sys.path when needed."""
+    try:
+        from utils.aqinfo_seedance import AQInfoSeedanceClient, SeedanceModel, AssetType, SeedanceRatio, SeedanceResolution
+        return AQInfoSeedanceClient, SeedanceModel, AssetType, SeedanceRatio, SeedanceResolution
+    except ImportError:
+        return None, None, None, None, None
+
+def _load_env():
+    """Load .env files once at module level."""
+    for env_path in [
+        Path("~/workspace/lingolens/backend/.env").expanduser(),
+        Path("~/workspace/shakespeare/.env").expanduser(),
+    ]:
+        if env_path.exists():
+            for line in open(env_path):
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip())
+
+_load_env()
+_SeedanceClient, _SeedanceModel, _AssetType, _SeedanceRatio, _SeedanceResolution = _ensure_seedance_import()
+SEEDANCE_AVAILABLE = _SeedanceClient is not None
+if SEEDANCE_AVAILABLE:
+    _seedance_client = _SeedanceClient()
+else:
+    _seedance_client = None
 
 
-def normalize_seedance_duration(target_sec: float) -> int:
-    """Round to nearest integer second, clamped to [5, 30]."""
-    return max(5, min(30, round(target_sec)))
+from skills.timeline_plan.models import normalize_seedance_duration
 
 
 def normalize_segment_encoding(input_path: str, output_path: str) -> None:
@@ -102,8 +111,7 @@ async def _upload_local_image(path: str, name: str) -> str:
         key = f"seedance_refs/{name}_{uuid.uuid4().hex[:8]}.png"
         bucket.put_object_from_file(key, path)
         url = bucket.sign_url('GET', key, 86400)
-        result = await _seedance_client.create_asset(url=url, asset_type=AssetType.IMAGE, name=name)
-        aid = result.get("data", {}).get("id", result.get("id", ""))
+        result = await _seedance_client.create_asset(url=url, asset_type=_AssetType.IMAGE, name=name)
         if aid:
             await _seedance_client.wait_for_asset(aid, max_wait_time=120)
         return aid
@@ -161,9 +169,9 @@ async def _generate_via_seedance(item: dict, duration: int) -> str:
     try:
         result = await _seedance_client.multimodal_reference_to_video(
             prompt=prompt, images=asset_urls,
-            model=SeedanceModel.SEEDANCE_2_0_FAST,
-            duration=duration, ratio=SeedanceRatio.RATIO_9_16,
-            resolution=SeedanceResolution.RESOLUTION_720P,
+            model=_SeedanceModel.SEEDANCE_2_0_FAST,
+            duration=duration, ratio=_SeedanceRatio.RATIO_9_16,
+            resolution=_SeedanceResolution.RESOLUTION_720P,
             generate_audio=True, wait=True, max_wait_time=900,
         )
         return result.get("video_url", "")
@@ -182,9 +190,9 @@ def _download_video(url: str, path: Path) -> bool:
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
-                data = resp.read()
-            with open(path, "wb") as f:
-                f.write(data)
+                with open(path, "wb") as f:
+                    while chunk := resp.read(8192):
+                        f.write(chunk)
             print(f"    Downloaded {path.stat().st_size//1024}KB")
             return True
         except Exception as e:
@@ -245,13 +253,16 @@ async def assemble_video(
             if video_url and _download_video(video_url, Path(seg_path)):
                 print(f"  [SEED] Shot {item['shot_number']}: seedance {duration}s → {seg_path}")
             else:
-                # Fallback to original segment
-                subprocess.run([
-                    "ffmpeg", "-y", "-ss", f"{item['start_sec']:.3f}",
-                    "-to", f"{item['end_sec']:.3f}",
-                    "-i", original_video, "-c", "copy", seg_path,
-                ], capture_output=True, check=True)
-                print(f"  [SEED-FB] Shot {item['shot_number']}: seedance failed → original fallback")
+                # Fallback to original segment — don't crash on ffmpeg failure
+                try:
+                    subprocess.run([
+                        "ffmpeg", "-y", "-ss", f"{item['start_sec']:.3f}",
+                        "-to", f"{item['end_sec']:.3f}",
+                        "-i", original_video, "-c", "copy", seg_path,
+                    ], capture_output=True, check=True)
+                    print(f"  [SEED-FB] Shot {item['shot_number']}: seedance failed → original fallback")
+                except subprocess.CalledProcessError:
+                    print(f"  [SEED-FB] Shot {item['shot_number']}: seedance + fallback both failed → skipped")
 
         if os.path.exists(seg_path) and os.path.getsize(seg_path) > 0:
             segment_paths.append(seg_path)

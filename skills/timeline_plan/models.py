@@ -74,3 +74,8 @@ class Stage3Input:
     rewrite_json: Dict[str, Any] = field(default_factory=dict)
     canvas_nodes: List[CanvasNode] = field(default_factory=list)
     level: str = "B2"
+
+
+def normalize_seedance_duration(target_sec: float) -> int:
+    """Round duration to nearest integer second, clamped to [5, 30] for seedance 2.0."""
+    return max(5, min(30, round(target_sec)))
