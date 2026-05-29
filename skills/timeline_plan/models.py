@@ -44,7 +44,7 @@ class TimelinePlanItem:
     matched_node_id: Optional[str] = None
     match_confidence: Optional[float] = None
     degradation_level: int = 0
-    seedance_duration: Optional[int] = None
+    seedance_duration: Optional[float] = None
     original_duration: Optional[float] = None
 
     @property

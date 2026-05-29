@@ -36,7 +36,7 @@ TimelinePlanItem:
   matched_node_id: str     # 匹配到的画布节点 ID
   match_confidence: float  # 匹配置信度 (0.0-1.0)
   degradation_level: int   # 降级层级 (0=最优, 1=无参考图, 2=无节点匹配)
-  seedance_duration: int   # seedance 生成时长 (-1=智能)
+  seedance_duration: float   # seedance 生成时长 (-1=智能)
   original_duration: float # 原始时间范围
 ```
 
@@ -45,7 +45,7 @@ TimelinePlanItem:
 ## 2. 处理流程
 
 ```
-generat_timeline_plan(Stage3Input)
+generate_timeline_plan(Stage3Input)
 │
 ├─ 1. 筛选改写行: original ≠ rewritten
 │     rewritten_lines = [rl for rl in all if rl.original != rl.rewritten]
@@ -155,7 +155,7 @@ If no node matches, omit the line.
 
 3 次运行，每次 shuffle node 顺序以消除位置偏见。
 
-**评分** (`_score_mapping`):
+**评分** (`_score_mapping`): 对每次运行的完整映射打分。
 ```python
 score = match_count
 for each shot:
@@ -163,7 +163,9 @@ for each shot:
     if mapped to different nodes → score -= 0.5 (contiguity penalty)
 ```
 
-**置信度** (`_compute_consistency`):
+**选择策略**: 选 `_score_mapping` 分数最高的那次完整运行（Best-Run Selection），而非逐行的 Majority Voting。这保证了同一次运行内的连续性约束不被打破。
+
+**置信度** (`_compute_consistency`): 用多次运行的交叉一致性估算每行的置信度。
 ```python
 for each line_id:
   confidence = most_common_node_count / total_runs
@@ -242,13 +244,15 @@ Step 1: Split by time gap
       current.append(line)
   groups.append(current)
 
-Step 2: Merge-up short groups
+Step 2: Merge-up short groups (only if gap ≤ MAX_GAP_SEC)
   for each group:
     if duration >= MIN_SEEDANCE_DURATION:
       keep
     else:
-      try merge-forward → next group
-      try merge-backward → previous group
+      gap_forward = distance to next group
+      gap_backward = distance to previous group
+      if gap_forward ≤ MAX_GAP_SEC → merge-forward
+      elif gap_backward ≤ MAX_GAP_SEC → merge-backward
       else → keep as isolated (caller falls back to original)
 ```
 
@@ -258,13 +262,19 @@ Step 2: Merge-up short groups
 改写行时间: [2.8-4.2] [5.3-6.4] [17.5-18.3] [18.8-20.0] [21.1-29.6]
 
 Step 1: 按 gap > 5s 拆分
-  group A: [2.8-4.2, 5.3-6.4]    dur=3.6s ← < 4s
+  group A: [2.8-4.2, 5.3-6.4]    dur=3.6s ← < 4s, 孤立短组
   group B: [17.5-18.3, 18.8-20.0, 21.1-29.6]  dur=12.1s ✅
 
-Step 2: merge-up
-  group A (3.6s < 4s) → merge-forward → group B
-  → 最终: 1 个 group, 17.5-29.6s (含 2.8-6.4s 的内容)
+Step 2: merge-up (需检查 gap ≤ MAX_GAP_SEC)
+  group A (3.6s < 4s):
+    gap_forward = 17.5 - 6.4 = 11.1s > 5s  ← 不能合并
+    gap_backward = inf (无前组)
+    → 孤立短组, 保留为单独 group, caller 触发 fallback original
+  → 最终: group A → source="original" (不改写,保视频流畅)
+          group B → source="seedance" (12.1s ✅)
 ```
+
+> **设计决策**: 孤立短组 (< 4s 且距最近邻 > 5s) 宁可不改写也要保视频流畅。强行跨越 11s gap 合并会导致 seedance 生成大段无意义的空白/幻觉画面。
 
 ---
 
@@ -284,12 +294,23 @@ Step 2: merge-up
 - **seedance 时间**: 改写行的 ASR 时间戳 (min/max)
 - **original 时间**: 多模态 LLM 的 ScriptShot 边界
 
-处理策略: **seedance 优先**——移除与任何 seedance 项时间范围重叠的 original 项。
+处理策略: **种子优先 + 区间切分**——original 项与 seedance 项重叠时，不对整个 original 项做 skip，而是将 original 项按 seedance 区间切分，保留未被覆盖的片段。
+
+```
+例: original [10, 40], seedance [20, 24]
+  → 切分为 original [10, 20] + seedance [20, 24] + original [24, 40]
+
+例: original [0, 60], seedance [15, 25], seedance [40, 45]
+  → original [0, 15] + seedance [15, 25] + original [25, 40]
+    + seedance [40, 45] + original [45, 60]
+```
 
 ```python
 for each original item:
-  if overlaps with any seedance item:
-    skip  # seedance covers this time range
+  segments = [(start, end)]
+  for each seedance item:
+    carve out seedance range from all segments
+  create original TimelinePlanItems for remaining segments
 ```
 
 ---

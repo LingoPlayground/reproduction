@@ -66,7 +66,7 @@ def _split_contiguous(rewrite_lines: List[Dict], max_gap_sec: float = 5.0) -> Li
             current.append(rl)
     groups.append(current)
     
-    # Step 2: Merge-up short groups
+    # Step 2: Merge-up short groups (only if gap to neighbor ≤ max_gap_sec)
     merged = []
     i = 0
     while i < len(groups):
@@ -78,21 +78,28 @@ def _split_contiguous(rewrite_lines: List[Dict], max_gap_sec: float = 5.0) -> Li
             i += 1
             continue
         
-        # Try merge-forward (preferred: seedance first frames are higher quality)
+        # Check gap to neighbors before merging
+        gap_forward = float('inf')
         if i + 1 < len(groups):
+            my_end = max(r.get("end_seconds", 0) for r in group)
+            next_start = min(r.get("start_seconds", 0) for r in groups[i + 1])
+            gap_forward = next_start - my_end
+        
+        gap_backward = float('inf')
+        if merged:
+            prev_end = max(r.get("end_seconds", 0) for r in merged[-1])
+            my_start = min(r.get("start_seconds", 0) for r in group)
+            gap_backward = my_start - prev_end
+        
+        if gap_forward <= max_gap_sec:
             groups[i + 1] = group + groups[i + 1]
             i += 1
-            continue
-        
-        # Try merge-backward
-        if merged:
+        elif gap_backward <= max_gap_sec:
             merged[-1].extend(group)
             i += 1
-            continue
-        
-        # Isolated short group — keep as-is for fallback
-        merged.append(group)
-        i += 1
+        else:
+            merged.append(group)
+            i += 1
     
     return merged
 
@@ -269,17 +276,39 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
     # Sort by start time for correct playback order
     items.sort(key=lambda i: i.start_sec)
 
+    # Split original items around seedance items (instead of removing entire original)
     seedance_items = [i for i in items if i.source == "seedance"]
     filtered = []
     for item in items:
-        if item.source == "original":
-            overlaps = any(
-                item.start_sec < si.end_sec and item.end_sec > si.start_sec
-                for si in seedance_items
-            )
-            if overlaps:
-                continue
-        filtered.append(item)
+        if item.source != "original":
+            filtered.append(item)
+            continue
+        # Carve out seedance time ranges from this original segment
+        segments = [(item.start_sec, item.end_sec)]
+        for si in seedance_items:
+            new_segments = []
+            for seg_start, seg_end in segments:
+                if si.start_sec >= seg_end or si.end_sec <= seg_start:
+                    new_segments.append((seg_start, seg_end))
+                else:
+                    if seg_start < si.start_sec:
+                        new_segments.append((seg_start, si.start_sec))
+                    if seg_end > si.end_sec:
+                        new_segments.append((si.end_sec, seg_end))
+            segments = new_segments
+            if not segments:
+                break
+        for seg_start, seg_end in segments:
+            if seg_end - seg_start > 0.1:
+                filtered.append(TimelinePlanItem(
+                    shot_id=f"{item.shot_id}_seg",
+                    shot_number=item.shot_number,
+                    source="original",
+                    start_sec=seg_start,
+                    end_sec=seg_end,
+                    scene_description=item.scene_description,
+                    original_duration=seg_end - seg_start,
+                ))
     items = filtered
 
     return TimelinePlan(
