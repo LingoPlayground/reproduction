@@ -266,25 +266,14 @@ async def assemble_video(
             video_url = await _generate_via_seedance(item, duration)
             if video_url and _download_video(video_url, Path(seg_path)):
                 actual = _probe_duration(seg_path)
-                if actual > 0:
-                    if actual > planned_duration + 0.3:
-                        trimmed = str(work_dir / f"seg_{idx:03d}_trimmed.mp4")
-                        subprocess.run([
-                            "ffmpeg", "-y", "-i", seg_path,
-                            "-t", f"{planned_duration:.3f}",
-                            "-c", "copy", trimmed,
-                        ], capture_output=True, check=True)
-                        os.replace(trimmed, seg_path)
-                    elif actual < planned_duration - 0.3:
-                        pad_sec = planned_duration - actual
-                        padded = str(work_dir / f"seg_{idx:03d}_padded.mp4")
-                        subprocess.run([
-                            "ffmpeg", "-y", "-i", seg_path,
-                            "-vf", f"tpad=stop_mode=clone:stop_duration={pad_sec:.2f}",
-                            "-af", f"apad=pad_dur={pad_sec:.2f}",
-                            padded,
-                        ], capture_output=True, check=True)
-                        os.replace(padded, seg_path)
+                if actual > 0 and actual > planned_duration + 0.3:
+                    trimmed = str(work_dir / f"seg_{idx:03d}_trimmed.mp4")
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", seg_path,
+                        "-t", f"{planned_duration:.3f}",
+                        "-c", "copy", trimmed,
+                    ], capture_output=True, check=True)
+                    os.replace(trimmed, seg_path)
                 print(f"  [SEED] Shot {item['shot_number']}: seedance {actual:.1f}s (planned {planned_duration:.1f}s)")
             else:
                 # Fallback to original segment — don't crash on ffmpeg failure

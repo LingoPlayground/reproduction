@@ -43,6 +43,23 @@ def _collect_ref_images(matched_node: Optional[CanvasNode], keyframes: List[KeyF
     return shot_kfs if shot_kfs else []
 
 
+def _split_contiguous(rewrite_lines: List[Dict], max_gap_sec: float = 5.0) -> List[List[Dict]]:
+    if not rewrite_lines:
+        return []
+    groups = []
+    current = [rewrite_lines[0]]
+    for rl in rewrite_lines[1:]:
+        prev_end = current[-1].get("end_seconds", 0.0)
+        curr_start = rl.get("start_seconds", 0.0)
+        if curr_start - prev_end > max_gap_sec:
+            groups.append(current)
+            current = [rl]
+        else:
+            current.append(rl)
+    groups.append(current)
+    return groups
+
+
 def _make_rl_objects(rewrite_lines: List[Dict]) -> List[SimpleNamespace]:
     """Convert rewrite line dicts to SimpleNamespace, adding dialogue=original
     so match_lines_to_nodes can use getattr(line, 'dialogue', '')."""
@@ -115,55 +132,52 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
         if not node_rewrite_lines:
             continue
 
-        # Determine time range: min/max of these lines' start/end
-        min_start = min(
-            rl.get("start_seconds", 0.0) for rl in node_rewrite_lines
-        )
-        max_end = max(
-            rl.get("end_seconds", min_start + 1.0) for rl in node_rewrite_lines
-        )
-        duration = max_end - min_start
+        # Sort by start time and split into contiguous groups
+        node_rewrite_lines.sort(key=lambda rl: rl.get("start_seconds", 0.0))
+        contiguous_groups = _split_contiguous(node_rewrite_lines)
 
-        # Scene description: use the first line's shot context
-        first_shot = line_id_to_shot.get(node_rewrite_lines[0]["line_id"])
-        scene_desc = getattr(first_shot, "scene_description", "") if first_shot else ""
-        shot_num = node_rewrite_lines[0].get("shot_number", 0)
+        for group in contiguous_groups:
+            min_start = min(rl.get("start_seconds", 0.0) for rl in group)
+            max_end = max(rl.get("end_seconds", min_start + 1.0) for rl in group)
+            duration = max_end - min_start
 
-        degradation_level = 0
-        ref_images = _collect_ref_images(node, keyframes, shot_num)
-        if not ref_images:
-            degradation_level = 1
+            first_shot = line_id_to_shot.get(group[0]["line_id"])
+            scene_desc = getattr(first_shot, "scene_description", "") if first_shot else ""
+            shot_num = group[0].get("shot_number", 0)
 
-        prompt_str = node.prompt if node else ""
-        rl_objects = _make_rl_objects(node_rewrite_lines)
-        rewritten_prompt = extract_and_rewrite_prompt(
-            prompt_str, rl_objects, scene_desc
-        )
+            degradation_level = 0
+            ref_images = _collect_ref_images(node, keyframes, shot_num)
+            if not ref_images:
+                degradation_level = 1
 
-        seedance_dur = normalize_seedance_duration(duration)
+            prompt_str = node.prompt if node else ""
+            rl_objects = _make_rl_objects(group)
+            rewritten_prompt = extract_and_rewrite_prompt(
+                prompt_str, rl_objects, scene_desc
+            )
 
-        node_confidence = None
-        if line_ids:
-            conf_values = [line_confidences.get(lid, 0.0) for lid in line_ids if lid in line_confidences]
-            if conf_values:
-                node_confidence = sum(conf_values) / len(conf_values)
+            seedance_dur = normalize_seedance_duration(duration)
 
-        items.append(TimelinePlanItem(
-            shot_id=f"shot_{shot_num}_node_{node_id[:8]}" if node else f"shot_{shot_num}",
-            shot_number=shot_num,
-            source="seedance",
-            start_sec=min_start,
-            end_sec=max_end,
-            scene_description=scene_desc,
-            ref_images=ref_images,
-            rewritten_prompt=rewritten_prompt,
-            matched_node_id=node_id if node else None,
-            match_confidence=node_confidence,
-            degradation_level=degradation_level,
-            seedance_duration=seedance_dur,
-            original_duration=duration,
-        ))
-        handled_rewrite_line_ids.update(line_ids)
+            group_ids = {rl["line_id"] for rl in group}
+            conf_values = [line_confidences.get(lid, 0.0) for lid in group_ids if lid in line_confidences]
+            node_confidence = sum(conf_values) / len(conf_values) if conf_values else None
+
+            items.append(TimelinePlanItem(
+                shot_id=f"shot_{shot_num}_node_{node_id[:8]}" if node else f"shot_{shot_num}",
+                shot_number=shot_num,
+                source="seedance",
+                start_sec=min_start,
+                end_sec=max_end,
+                scene_description=scene_desc,
+                ref_images=ref_images,
+                rewritten_prompt=rewritten_prompt,
+                matched_node_id=node_id if node else None,
+                match_confidence=node_confidence,
+                degradation_level=degradation_level,
+                seedance_duration=seedance_dur,
+                original_duration=duration,
+            ))
+            handled_rewrite_line_ids.update(group_ids)
 
     # ── Remaining shots: original (unchanged dialogue) ─────────
     for idx, shot in enumerate(shots):
