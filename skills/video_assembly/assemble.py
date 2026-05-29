@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -20,7 +21,8 @@ WORK_DIR = Path(__file__).resolve().parents[2] / "generated"
 # ── seedance import (lazy, only when lingolens is available) ──────
 
 def _ensure_seedance_import():
-    """Lazy-import seedance client — only patches sys.path when needed."""
+    """Lazy-import seedance client with sys.path setup."""
+    sys.path.insert(0, str(Path("~/workspace/lingolens/backend").expanduser()))
     try:
         from utils.aqinfo_seedance import AQInfoSeedanceClient, SeedanceModel, AssetType, SeedanceRatio, SeedanceResolution
         return AQInfoSeedanceClient, SeedanceModel, AssetType, SeedanceRatio, SeedanceResolution
@@ -249,10 +251,9 @@ async def assemble_video(
             print(f"  [ORIG] Shot {item['shot_number']}: {item['start_sec']:.1f}s-{item['end_sec']:.1f}s")
         elif source == "seedance":
             duration = item.get("seedance_duration")
-            if duration is None:
-                duration = normalize_seedance_duration(
-                    item["end_sec"] - item["start_sec"]
-                )
+            if duration is None or duration < 0:
+                # None → compute from timeline, -1 → default smart-duration value
+                duration = max(5, round(item["end_sec"] - item["start_sec"])) if duration is None else 8
             video_url = await _generate_via_seedance(item, duration)
             if video_url and _download_video(video_url, Path(seg_path)):
                 print(f"  [SEED] Shot {item['shot_number']}: seedance {duration}s → {seg_path}")
@@ -304,7 +305,6 @@ async def assemble_video(
     print(f"  Final: {output_path} ({size_mb:.1f}MB)")
 
     # Clean up intermediate segments
-    import shutil
     shutil.rmtree(work_dir, ignore_errors=True)
 
     return output_path
