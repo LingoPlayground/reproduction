@@ -255,9 +255,12 @@ async def assemble_video(
 
         if source == "original" or skip_seedance:
             subprocess.run([
-                "ffmpeg", "-y", "-ss", f"{item['start_sec']:.3f}",
-                "-to", f"{item['end_sec']:.3f}",
-                "-i", original_video, "-c", "copy", seg_path,
+                "ffmpeg", "-y",
+                "-ss", f"{item['start_sec']:.3f}",
+                "-i", original_video,
+                "-t", f"{item['end_sec'] - item['start_sec']:.3f}",
+                "-c:v", "libx264", "-c:a", "aac",
+                seg_path,
             ], capture_output=True, check=True)
             print(f"  [ORIG] Shot {item['shot_number']}: {item['start_sec']:.1f}s-{item['end_sec']:.1f}s")
         elif source == "seedance":
@@ -279,9 +282,12 @@ async def assemble_video(
                 # Fallback to original segment — don't crash on ffmpeg failure
                 try:
                     subprocess.run([
-                        "ffmpeg", "-y", "-ss", f"{item['start_sec']:.3f}",
-                        "-to", f"{item['end_sec']:.3f}",
-                        "-i", original_video, "-c", "copy", seg_path,
+                        "ffmpeg", "-y",
+                        "-ss", f"{item['start_sec']:.3f}",
+                        "-i", original_video,
+                        "-t", f"{item['end_sec'] - item['start_sec']:.3f}",
+                        "-c:v", "libx264", "-c:a", "aac",
+                        seg_path,
                     ], capture_output=True, check=True)
                     print(f"  [SEED-FB] Shot {item['shot_number']}: seedance failed → original fallback")
                 except subprocess.CalledProcessError:
