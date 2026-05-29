@@ -90,9 +90,10 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
             rewritten_lines.append(rl)
 
     # ── Match rewritten lines to nodes ─────────────────────────
+    line_confidences: Dict[str, float] = {}
     if rewritten_lines and canvas_nodes:
         rl_objects = _make_rl_objects(rewritten_lines)
-        node_line_groups = match_lines_to_nodes(rl_objects, canvas_nodes)
+        node_line_groups, line_confidences = match_lines_to_nodes(rl_objects, canvas_nodes)
         # node_line_groups: {node_id: [line_id, ...]}
     else:
         node_line_groups = {}
@@ -143,6 +144,13 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
         )
 
         seedance_dur = normalize_seedance_duration(duration)
+
+        node_confidence = None
+        if line_ids:
+            conf_values = [line_confidences.get(lid, 0.0) for lid in line_ids if lid in line_confidences]
+            if conf_values:
+                node_confidence = sum(conf_values) / len(conf_values)
+
         items.append(TimelinePlanItem(
             shot_id=f"shot_{shot_num}_node_{node_id[:8]}" if node else f"shot_{shot_num}",
             shot_number=shot_num,
@@ -153,6 +161,7 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
             ref_images=ref_images,
             rewritten_prompt=rewritten_prompt,
             matched_node_id=node_id if node else None,
+            match_confidence=node_confidence,
             degradation_level=degradation_level,
             seedance_duration=seedance_dur,
             original_duration=duration,

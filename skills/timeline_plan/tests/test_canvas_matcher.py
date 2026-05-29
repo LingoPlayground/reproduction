@@ -1,64 +1,100 @@
 """Tests for canvas node matcher."""
+from types import SimpleNamespace
 from skills.timeline_plan.models import CanvasNode
 from skills.timeline_plan.canvas_matcher import (
-    text_overlap_score, match_canvas_node_for_shot,
+    match_lines_to_nodes,
+    _score_mapping,
+    _compute_consistency,
 )
 
 
-class FakeShot:
-    def __init__(self, lines=None, scene_description=""):
-        self.lines = lines or []
-        self.scene_description = scene_description
-
-
-class FakeLine:
-    def __init__(self, dialogue=""):
-        self.dialogue = dialogue
-
-
-class TestTextOverlapScore:
-    def test_exact_match(self):
-        score = text_overlap_score("this ceremony is boring", "this ceremony is boring")
-        assert score > 0.8
-
-    def test_partial_match(self):
-        score = text_overlap_score(
-            "this ceremony is boring",
-            "He says this ceremony is boring and walks away"
-        )
-        assert score > 0.5
-
-    def test_no_match(self):
-        score = text_overlap_score("hello world", "xyz abc def ghi")
-        assert score < 0.3
-
-    def test_case_insensitive(self):
-        score = text_overlap_score("Hello World", "hello world")
-        assert score > 0.8
-
-
-class TestMatchCanvasNodeForShot:
-    def test_matches_node_with_overlapping_dialogue(self):
-        shot = FakeShot(
-            lines=[FakeLine("this ceremony is boring"), FakeLine("let's see who wants me")],
-            scene_description="Graduation ceremony"
-        )
-        nodes = [
-            CanvasNode(node_id="node1", prompt="random content", video_url="http://x.com/v1.mp4"),
-            CanvasNode(node_id="node2", prompt="He says this ceremony is boring and let's see who wants me", video_url="http://x.com/v2.mp4"),
+class TestScoreMapping:
+    def test_perfect_mapping_no_penalty(self):
+        lines = [
+            SimpleNamespace(line_id="l1", shot_number=1),
+            SimpleNamespace(line_id="l2", shot_number=1),
+            SimpleNamespace(line_id="l3", shot_number=2),
         ]
-        matched, confidence = match_canvas_node_for_shot(shot, nodes)
-        assert matched is not None
-        assert matched.node_id == "node2"
-        assert confidence > 0.5
+        mapping = {"l1": "n1", "l2": "n1", "l3": "n2"}
+        score = _score_mapping(mapping, lines)
+        assert score == 3.0  # 3 matches, no cross-shot splits within same shot
 
-    def test_no_match_below_threshold(self):
-        shot = FakeShot(lines=[FakeLine("unique dialogue text")], scene_description="A scene")
-        nodes = [CanvasNode(node_id="node1", prompt="totally unrelated content", video_url="http://x.com/v1.mp4")]
-        matched, _ = match_canvas_node_for_shot(shot, nodes)
-        assert matched is None
+    def test_contiguity_penalty(self):
+        """Consecutive lines in same shot → different nodes incurs penalty."""
+        lines = [
+            SimpleNamespace(line_id="l1", shot_number=1),
+            SimpleNamespace(line_id="l2", shot_number=1),
+        ]
+        mapping = {"l1": "n1", "l2": "n2"}
+        score = _score_mapping(mapping, lines)
+        assert score == 1.5  # 2 matches - 0.5 penalty
 
-    def test_empty_nodes_returns_none(self):
-        shot = FakeShot(lines=[FakeLine("hello")])
-        matched, _ = match_canvas_node_for_shot(shot, [])
-        assert matched is None
+    def test_empty_mapping(self):
+        score = _score_mapping({}, [])
+        assert score == 0.0
+
+    def test_different_shots_no_penalty(self):
+        """Lines in different shots → different nodes: no penalty."""
+        lines = [
+            SimpleNamespace(line_id="l1", shot_number=1),
+            SimpleNamespace(line_id="l2", shot_number=2),
+        ]
+        mapping = {"l1": "n1", "l2": "n2"}
+        score = _score_mapping(mapping, lines)
+        assert score == 2.0  # 2 matches, different shots, no penalty
+
+
+class TestComputeConsistency:
+    def test_full_agreement(self):
+        results = [
+            {"l1": "n1", "l2": "n2"},
+            {"l1": "n1", "l2": "n2"},
+            {"l1": "n1", "l2": "n2"},
+        ]
+        conf = _compute_consistency(results)
+        assert conf["l1"] == 1.0
+        assert conf["l2"] == 1.0
+
+    def test_partial_agreement(self):
+        results = [
+            {"l1": "n1", "l2": "n2"},
+            {"l1": "n1", "l2": "n1"},  # l2 disagrees
+            {"l1": "n1", "l2": "n2"},
+        ]
+        conf = _compute_consistency(results)
+        assert conf["l1"] == 1.0
+        assert conf["l2"] == 2.0 / 3.0
+
+    def test_empty_results(self):
+        conf = _compute_consistency([])
+        assert conf == {}
+
+    def test_line_only_in_some_runs(self):
+        results = [
+            {"l1": "n1"},
+            {"l1": "n1", "l2": "n2"},
+            {"l2": "n2"},
+        ]
+        conf = _compute_consistency(results)
+        assert conf["l1"] == 1.0
+        assert conf["l2"] == 1.0
+
+
+class TestMatchLinesToNodes:
+    def test_empty_returns_empty(self):
+        node_groups, confidences = match_lines_to_nodes([], [])
+        assert node_groups == {}
+        assert confidences == {}
+
+    def test_no_nodes_returns_empty(self):
+        lines = [SimpleNamespace(line_id="l1", dialogue="hello")]
+        node_groups, confidences = match_lines_to_nodes(lines, [])
+        assert node_groups == {}
+        assert confidences == {}
+
+    def test_no_api_key_returns_empty(self):
+        lines = [SimpleNamespace(line_id="l1", dialogue="hello", speaker="", shot_number=0, shot_scene="")]
+        nodes = [CanvasNode(node_id="n1", prompt="test prompt", video_url="")]
+        node_groups, confidences = match_lines_to_nodes(lines, nodes)
+        assert node_groups == {}
+        assert confidences == {}

@@ -26,13 +26,14 @@ def _llm_rewrite_prompt(
     
     Returns rewritten prompt, or empty string on failure.
     """
-    # Build line mappings for the LLM
     mappings = []
     for line in rewrite_lines:
         original = getattr(line, "original", "") or getattr(line, "dialogue", "")
         rewritten = getattr(line, "rewritten", "")
+        speaker = getattr(line, "speaker", "")
         if original.strip() and rewritten.strip() and original.strip() != rewritten.strip():
             mappings.append({
+                "speaker": speaker,
                 "original": original.strip(),
                 "rewritten": rewritten.strip(),
             })
@@ -47,7 +48,7 @@ You rewrite video generation prompts for seedance (AI video generator).
 A canvas node prompt is a video generation instruction containing:
 - **Style/Quality settings**: visual quality descriptors, resolution, lighting, color grading, camera style. These apply to the ENTIRE video and MUST be preserved in full.
 - **Scene descriptions**: numbered sections (镜头 1, Shot 2, etc.) describing specific shots with camera angles, character actions, expressions, and dialogue.
-- **Dialogue**: English text in quotation marks that characters speak on screen.
+- **Dialogue**: English text in quotation marks that characters speak on screen, often preceded by speaker names like "Donny: " or "台词配合：".
 
 Style settings can appear ANYWHERE — at the top, bottom, or interspersed between scene descriptions.
 
@@ -55,9 +56,9 @@ Style settings can appear ANYWHERE — at the top, bottom, or interspersed betwe
 
 1. **Preserve ALL style/quality settings** from the original prompt — every quality keyword, resolution spec, lighting description, camera style, and visual directive. These are non-negotiable.
 
-2. **Keep only scene descriptions that contain the dialogue being rewritten.** Remove scene descriptions for dialogue that is NOT in the rewrite list.
+2. **Keep entire scene sections that contain ANY rewritten dialogue.** Within those sections, replace ONLY the specific dialogue lines listed in the mappings below. Other dialogue in the same section should be left unchanged. Remove only scene sections that have NO rewritten dialogue at all.
 
-3. **Replace original dialogue with rewritten dialogue** in the kept scene descriptions. The rewritten text may be longer or shorter — adjust naturally.
+3. **Replace original dialogue with rewritten dialogue** in the kept scene descriptions. The rewritten text may be longer or shorter — adjust naturally. Preserve the speaker attribution format (e.g., "Donny: " before the dialogue).
 
 4. **Maintain the original structure and formatting** as much as possible.
 
