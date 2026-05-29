@@ -161,6 +161,8 @@ def _llm_match_run(
             "speaker": getattr(l, 'speaker', '') or '',
             "shot_number": getattr(l, 'shot_number', 0),
             "shot_scene": getattr(l, 'shot_scene', '') or '',
+            "start_seconds": getattr(l, 'start_seconds', None),
+            "end_seconds": getattr(l, 'end_seconds', None),
         })
     
     system_msg = """## Role
