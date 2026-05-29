@@ -62,31 +62,20 @@ def _llm_rewrite_prompt(
         return ""
     
     system_msg = """## Role
-You rewrite video generation prompts for seedance (AI video generator).
+You rewrite video generation prompts for seedance, keeping only visual content tied to the rewritten dialogue.
 
-## The Original Prompt
-A canvas node prompt is a video generation instruction containing:
-- **Style/Quality settings**: visual quality descriptors, resolution, lighting, color grading, camera style. These apply to the ENTIRE video and MUST be preserved in full.
-- **Scene descriptions**: numbered sections (镜头 1, Shot 2, etc.) describing specific shots with camera angles, character actions, expressions, and dialogue.
-- **Dialogue**: English text in quotation marks that characters speak on screen, often preceded by speaker names like "Donny: " or "台词配合：".
+## Rules
 
-Style settings can appear ANYWHERE — at the top, bottom, or interspersed between scene descriptions.
+1. **Preserve all style/quality settings in full.** Resolution, lighting, camera style, color grading — these appear anywhere in the prompt and apply to the whole video. Never remove them.
 
-## Your Task
+2. **For each numbered section (镜头 N / Shot N):**
+   - If it contains **any** rewritten dialogue → keep the section, but trim it to only the visuals tied to the dialogue moment: camera angle, expression, action at the moment of speaking. Cut scene setup, background, transitions.
+   - If it contains **no** rewritten dialogue → remove the entire section.
 
-1. **Preserve ALL style/quality settings** from the original prompt — every quality keyword, resolution spec, lighting description, camera style, and visual directive. These are non-negotiable.
+3. **Replace original dialogue with rewritten dialogue.** Match the speaker attribution format (e.g., "Donny: " stays, only the quoted text changes).
 
-2. **Keep entire scene sections that contain ANY rewritten dialogue.** Within those sections, replace ONLY the specific dialogue lines listed in the mappings below. Other dialogue in the same section should be left unchanged. Remove only scene sections that have NO rewritten dialogue at all.
-
-3. **Replace original dialogue with rewritten dialogue** in the kept scene descriptions. The rewritten text may be longer or shorter — adjust naturally. Preserve the speaker attribution format (e.g., "Donny: " before the dialogue).
-
-4. **Only keep visual content directly related to the rewritten dialogue.** Within each kept section, retain camera angles, character expressions, and actions that describe the moments when the dialogue is spoken. Remove scene setup, background descriptions, transitional filler, and any visual content that does not directly involve the speaking characters during their dialogue. The output should generate a tight clip focused on the dialogue moments — not the full scene.
-
-5. **Maintain the original structure and formatting** as much as possible.
-
-6. If none of the scene descriptions match the rewrite lines, output the original prompt unchanged.
-
-Output ONLY the rewritten prompt text — no explanations, no JSON wrappers."""
+## Output
+Rewritten prompt text only. No explanations, no JSON."""
 
     import json as _j
     user_msg = f"""## Original Prompt
