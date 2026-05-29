@@ -76,12 +76,15 @@ class Stage3Input:
     level: str = "B2"
 
 
+MIN_SEEDANCE_DURATION = 4.0
+
+
 def normalize_seedance_duration(target_sec: float) -> int:
     """Map shot duration to seedance duration parameter.
     
-    For shots >= 2s: returns -1 (sentinel — assemble.py converts to default 8s).
-    For shots < 2s: returns max(4, round(target_sec)) to avoid seedance errors.
+    After merge-up, all items should be >= MIN_SEEDANCE_DURATION.
+    Returns -1 for smart duration (seedance auto-determines best length).
     """
-    if target_sec < 2.0:
+    if target_sec < MIN_SEEDANCE_DURATION:
         return max(4, round(target_sec))
-    return -1  # Sentinel for auto-duration
+    return -1

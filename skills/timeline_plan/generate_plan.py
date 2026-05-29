@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from skills.timeline_plan.models import (
     TimelinePlan, TimelinePlanItem, CanvasNode, CutPoint, KeyFrame, Stage3Input,
-    normalize_seedance_duration,
+    normalize_seedance_duration, MIN_SEEDANCE_DURATION,
 )
 from skills.timeline_plan.cut_fusion import determine_cut_points
 from skills.timeline_plan.canvas_matcher import match_lines_to_nodes
@@ -44,8 +44,16 @@ def _collect_ref_images(matched_node: Optional[CanvasNode], keyframes: List[KeyF
 
 
 def _split_contiguous(rewrite_lines: List[Dict], max_gap_sec: float = 5.0) -> List[List[Dict]]:
+    """Split rewrite lines into contiguous groups, then merge-up groups < MIN_SEEDANCE_DURATION.
+    
+    After splitting by time gap, any group shorter than MIN_SEEDANCE_DURATION
+    merges into its nearest neighbor. Isolated short groups (no neighbor) 
+    are left as-is for the caller to handle as original segments.
+    """
     if not rewrite_lines:
         return []
+    
+    # Step 1: Split by time gap
     groups = []
     current = [rewrite_lines[0]]
     for rl in rewrite_lines[1:]:
@@ -57,7 +65,36 @@ def _split_contiguous(rewrite_lines: List[Dict], max_gap_sec: float = 5.0) -> Li
         else:
             current.append(rl)
     groups.append(current)
-    return groups
+    
+    # Step 2: Merge-up short groups
+    merged = []
+    i = 0
+    while i < len(groups):
+        group = groups[i]
+        dur = max(r.get("end_seconds", 0) for r in group) - min(r.get("start_seconds", 0) for r in group)
+        
+        if dur >= MIN_SEEDANCE_DURATION:
+            merged.append(group)
+            i += 1
+            continue
+        
+        # Try merge-forward (preferred: seedance first frames are higher quality)
+        if i + 1 < len(groups):
+            groups[i + 1] = group + groups[i + 1]
+            i += 1
+            continue
+        
+        # Try merge-backward
+        if merged:
+            merged[-1].extend(group)
+            i += 1
+            continue
+        
+        # Isolated short group — keep as-is for fallback
+        merged.append(group)
+        i += 1
+    
+    return merged
 
 
 def _make_rl_objects(rewrite_lines: List[Dict]) -> List[SimpleNamespace]:
@@ -140,6 +177,12 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
             min_start = min(rl.get("start_seconds", 0.0) for rl in group)
             max_end = max(rl.get("end_seconds", min_start + 1.0) for rl in group)
             duration = max_end - min_start
+
+            if duration < MIN_SEEDANCE_DURATION:
+                # Isolated short group — fall back to original segment
+                group_ids = {rl["line_id"] for rl in group}
+                handled_rewrite_line_ids.update(group_ids)
+                continue
 
             first_shot = line_id_to_shot.get(group[0]["line_id"])
             scene_desc = getattr(first_shot, "scene_description", "") if first_shot else ""

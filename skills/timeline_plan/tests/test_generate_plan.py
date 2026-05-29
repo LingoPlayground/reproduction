@@ -49,9 +49,9 @@ class TestGenerateTimelinePlan:
         assert plan.items[0].source == "original"
 
     def test_produces_seedance_when_rewritten(self):
-        shots = [FakeShot(1, 0.0, 10.0, "Opening", [FakeLine("p1_l1", "hello", 1.0, 2.0)])]
+        shots = [FakeShot(1, 0.0, 10.0, "Opening", [FakeLine("p1_l1", "hello", 1.0, 6.0)])]
         script = FakeScriptOutput(shots)
-        rewrite = {"level": "B2", "lines": [make_rewrite("p1_l1", "hello", "hi there", 1, 1.0, 2.0)]}
+        rewrite = {"level": "B2", "lines": [make_rewrite("p1_l1", "hello", "hi there", 1, 1.0, 6.0)]}
         nodes = [CanvasNode(node_id="n1", prompt='He says "hello"', video_url="http://x.com/v.mp4", reference_images=["http://x.com/r.png"])]
         inp = Stage3Input(script_output=script, rewrite_json=rewrite, canvas_nodes=nodes, level="B2")
         plan = generate_timeline_plan(inp)
@@ -64,12 +64,12 @@ class TestGenerateTimelinePlan:
     def test_mixed_original_and_seedance(self):
         shots = [
             FakeShot(1, 0.0, 5.0, "Scene A", [FakeLine("p1_l1", "hello", 1.0, 2.0)]),
-            FakeShot(2, 5.0, 10.0, "Scene B", [FakeLine("p2_l1", "goodbye", 6.0, 7.0)]),
+            FakeShot(2, 5.0, 15.0, "Scene B", [FakeLine("p2_l1", "goodbye", 6.0, 7.0)]),
         ]
         script = FakeScriptOutput(shots)
         rewrite = {"level": "B2", "lines": [
             make_rewrite("p1_l1", "hello", "hello", 1, 1.0, 2.0),
-            make_rewrite("p2_l1", "goodbye", "farewell", 2, 6.0, 7.0),
+            make_rewrite("p2_l1", "goodbye", "farewell", 2, 6.0, 11.0),
         ]}
         nodes = [CanvasNode(node_id="n2", prompt='She says "goodbye"', video_url="http://x.com/v2.mp4", reference_images=["http://x.com/r2.png"])]
         inp = Stage3Input(script_output=script, rewrite_json=rewrite, canvas_nodes=nodes, level="B2")
