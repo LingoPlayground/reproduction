@@ -7,8 +7,35 @@ import asyncio
 import json
 import os
 import subprocess
+import sys
+import time
+import tempfile
+import urllib.request
+import uuid
 from pathlib import Path
 from typing import List
+
+WORK_DIR = Path(__file__).resolve().parents[2] / "generated"
+sys.path.insert(0, str(Path("~/workspace/lingolens/backend").expanduser()))
+
+for env_path in [
+    Path("~/workspace/lingolens/backend/.env").expanduser(),
+    Path("~/workspace/shakespeare/.env").expanduser(),
+]:
+    if env_path.exists():
+        for line in open(env_path):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip())
+
+# Lazy import — only available when lingolens is installed
+try:
+    from utils.aqinfo_seedance import AQInfoSeedanceClient, SeedanceModel, AssetType, SeedanceRatio, SeedanceResolution
+    _seedance_client = AQInfoSeedanceClient()
+    SEEDANCE_AVAILABLE = True
+except ImportError:
+    SEEDANCE_AVAILABLE = False
 
 
 def normalize_seedance_duration(target_sec: float) -> int:
@@ -42,6 +69,130 @@ def _write_concat_file(segment_paths: List[str], concat_path: str) -> str:
         for p in segment_paths:
             f.write(f"file '{p}'\n")
     return concat_path
+
+
+def _download_image_locally(url: str) -> str:
+    """Download a reference image to a temp file. Returns local path or empty string."""
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = resp.read()
+            fd, path = tempfile.mkstemp(suffix=".png")
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+            return path
+        except Exception:
+            if attempt == 2:
+                return ""
+            time.sleep(2)
+    return ""
+
+
+async def _upload_local_image(path: str, name: str) -> str:
+    """Upload image to OSS → create seedance asset → return asset ID."""
+    if not path or not os.path.exists(path):
+        return ""
+    if not SEEDANCE_AVAILABLE:
+        return ""
+    try:
+        import oss2
+        auth = oss2.Auth(os.environ['ALIYUN_ACCESS_KEY_ID'], os.environ['ALIYUN_ACCESS_KEY_SECRET'])
+        bucket = oss2.Bucket(auth, os.environ['ALIYUN_OSS_ENDPOINT'], os.environ['ALIYUN_OSS_BUCKET'])
+        key = f"seedance_refs/{name}_{uuid.uuid4().hex[:8]}.png"
+        bucket.put_object_from_file(key, path)
+        url = bucket.sign_url('GET', key, 86400)
+        result = await _seedance_client.create_asset(url=url, asset_type=AssetType.IMAGE, name=name)
+        aid = result.get("data", {}).get("id", result.get("id", ""))
+        if aid:
+            await _seedance_client.wait_for_asset(aid, max_wait_time=120)
+        return aid
+    except Exception as e:
+        print(f"    ⚠️  Upload failed: {e}")
+        return ""
+
+
+async def _generate_via_seedance(item: dict, duration: int) -> str:
+    """Generate a video via seedance for a single TimelinePlanItem.
+
+    Args:
+        item: TimelinePlanItem as dict (from JSON).
+        duration: Target duration in seconds (integer, 5-30).
+
+    Returns:
+        URL of generated video, or empty string on failure.
+    """
+    if not SEEDANCE_AVAILABLE:
+        return ""
+
+    prompt = item.get("rewritten_prompt", "")
+    ref_images = item.get("ref_images", [])
+
+    if not prompt or not ref_images:
+        return ""
+
+    shot_num = item.get("shot_number", 0)
+    name = f"shot_{shot_num}"
+
+    print(f"    [{name}] Downloading {len(ref_images)} images...")
+    local_paths = []
+    for u in ref_images:
+        lp = _download_image_locally(u)
+        if lp:
+            local_paths.append(lp)
+
+    if not local_paths:
+        print(f"    [{name}] ❌ All image downloads failed")
+        return ""
+
+    print(f"    [{name}] Uploading {len(local_paths)} images to seedance...")
+    asset_ids = []
+    for i, lp in enumerate(local_paths):
+        aid = await _upload_local_image(lp, f"gen_{name}_{i}")
+        if aid:
+            asset_ids.append(aid)
+        os.unlink(lp)
+
+    if not asset_ids:
+        return ""
+
+    asset_urls = [f"asset://{aid}" for aid in asset_ids]
+    print(f"    [{name}] Generating (seedance fast, {duration}s)...")
+    try:
+        result = await _seedance_client.multimodal_reference_to_video(
+            prompt=prompt, images=asset_urls,
+            model=SeedanceModel.SEEDANCE_2_0_FAST,
+            duration=duration, ratio=SeedanceRatio.RATIO_9_16,
+            resolution=SeedanceResolution.RESOLUTION_720P,
+            generate_audio=True, wait=True, max_wait_time=900,
+        )
+        return result.get("video_url", "")
+    except Exception as e:
+        print(f"    [{name}] ❌ seedance failed: {e}")
+        return ""
+
+
+def _download_video(url: str, path: Path) -> bool:
+    """Download a generated video from URL to local path."""
+    if not url:
+        return False
+    if path.exists():
+        return True
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = resp.read()
+            with open(path, "wb") as f:
+                f.write(data)
+            print(f"    Downloaded {path.stat().st_size//1024}KB")
+            return True
+        except Exception as e:
+            if attempt == 2:
+                print(f"    ❌ Download failed: {e}")
+                return False
+            time.sleep(3)
+    return False
 
 
 async def assemble_video(
@@ -87,13 +238,20 @@ async def assemble_video(
             ], capture_output=True, check=True)
             print(f"  [ORIG] Shot {item['shot_number']}: {item['start_sec']:.1f}s-{item['end_sec']:.1f}s")
         elif source == "seedance":
-            # Fallback to original segment (seedance integration deferred)
-            subprocess.run([
-                "ffmpeg", "-y", "-ss", f"{item['start_sec']:.3f}",
-                "-to", f"{item['end_sec']:.3f}",
-                "-i", original_video, "-c", "copy", seg_path,
-            ], capture_output=True, check=True)
-            print(f"  [SEED-FB] Shot {item['shot_number']}: {item['start_sec']:.1f}s-{item['end_sec']:.1f}s (original fallback)")
+            duration = item.get("seedance_duration", normalize_seedance_duration(
+                item["end_sec"] - item["start_sec"]
+            ))
+            video_url = await _generate_via_seedance(item, duration)
+            if video_url and _download_video(video_url, Path(seg_path)):
+                print(f"  [SEED] Shot {item['shot_number']}: seedance {duration}s → {seg_path}")
+            else:
+                # Fallback to original segment
+                subprocess.run([
+                    "ffmpeg", "-y", "-ss", f"{item['start_sec']:.3f}",
+                    "-to", f"{item['end_sec']:.3f}",
+                    "-i", original_video, "-c", "copy", seg_path,
+                ], capture_output=True, check=True)
+                print(f"  [SEED-FB] Shot {item['shot_number']}: seedance failed → original fallback")
 
         if os.path.exists(seg_path) and os.path.getsize(seg_path) > 0:
             segment_paths.append(seg_path)

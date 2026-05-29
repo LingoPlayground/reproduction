@@ -94,4 +94,62 @@ skills/
 └── video-generation/
     ├── SKILL.md                      # Stage 4 skill 定义
     └── generate_videos.py            # 生成+拼接脚本
+└── timeline_plan/                    # [NEW v2.0] Stage 3: 时间轴驱动的剪辑计划
+    ├── models.py                     # TimelinePlan, TimelinePlanItem 等数据模型
+    ├── cut_fusion.py                 # ScriptShot边界 + PySceneDetect 融合
+    ├── canvas_matcher.py             # 画布节点语义匹配
+    ├── prompt_extractor.py           # Prompt片段提取 (4级降级)
+    └── generate_plan.py              # Stage 3 编排器 (CLI入口)
+└── video_assembly/                   # [NEW v2.0] Stage 4: 视频组装
+    └── assemble.py                   # 原剧截取 + seedance生成 + 编码统一化 + 拼接
+└── scene_detection/                  # [NEW v2.0] Stage 1b: 场景检测增强
+    └── detect_scenes.py              # PySceneDetect 集成 + 关键帧提取
+
+---
+
+## Timeline Mode (v2.0 — New Pipeline)
+
+从 v2.0 开始，管线支持新的**时间轴驱动**方案，作为 legacy canvas-node-matching 方案的替代。
+
+### 架构
+
+```
+Stage 1 (unchanged):  剧本提取 → VideoScriptOutput
+Stage 1b (new):       场景检测 → CutPoints + KeyFrames
+Stage 2 (unchanged):  CEFR 改写 → RewriteJSON
+Stage 3 (new):        剪辑计划生成 → timeline_plan.json
+Stage 4 (new):        视频组装 → final.mp4
+```
+
+### 关键区别
+
+| 维度 | Legacy | Timeline (v2.0) |
+|------|--------|-----------------|
+| 视频源 | 画布节点视频 | 原剧完整视频 |
+| 剪辑位置 | 节点匹配决定 | ASR 时间戳 + PySceneDetect |
+| 画布节点用途 | 主视频源 | 仅参考图 + prompt 模板 |
+| 无改写镜头 | 下载画布节点视频 | 从原剧视频截取 |
+| 废片处理 | LLM 猜测剔除 | 不依赖画布节点,天然规避 |
+
+### 快速开始 (Timeline Mode)
+
+```bash
+# Stage 1b: 场景检测
+python3 skills/scene_detection/detect_scenes.py \
+  --video episode1.mp4 --output cuts.json
+
+# Stage 3: 生成剪辑计划
+python3 skills/timeline_plan/generate_plan.py \
+  --script episode1_script.json \
+  --rewrite rewrites/ep1_B2.json \
+  --canvas canvas_data.json \
+  --cuts cuts.json \
+  --output timeline_plan.json
+
+# Stage 4: 组装最终视频
+python3 skills/video_assembly/assemble.py \
+  --plan timeline_plan.json \
+  --video episode1.mp4 \
+  --output generated/ep1_B2_timeline.mp4
+```
 ```
