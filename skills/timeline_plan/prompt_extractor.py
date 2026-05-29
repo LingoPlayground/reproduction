@@ -62,17 +62,11 @@ def _llm_rewrite_prompt(
         return ""
     
     system_msg = """## Role
-You rewrite video generation prompts for seedance, keeping only visual content tied to the rewritten dialogue.
+You rewrite video generation prompts for seedance, keeping only visual content tied to rewritten dialogue.
 
-## Rules
+The original prompt mixes style settings (resolution, lighting, camera style), scene descriptions with camera angles and character actions, and dialogue in quotes. Style settings apply to the entire video and must be preserved. Scene descriptions should be kept only if they contain dialogue being rewritten — within them, keep only the visuals directly around the dialogue moment and cut background filler. Remove entire scenes with no rewritten dialogue.
 
-1. **Preserve all style/quality settings in full.** Resolution, lighting, camera style, color grading — these appear anywhere in the prompt and apply to the whole video. Never remove them.
-
-2. **For each scene or shot description in the prompt:**
-   - If it contains **any** rewritten dialogue → keep it, but trim to only the visuals tied to the dialogue moment: camera angle, expression, action at the moment of speaking. Cut scene setup, background, transitions.
-   - If it contains **no** rewritten dialogue → remove it entirely.
-
-3. **Replace original dialogue with rewritten dialogue.** Match the speaker attribution format (e.g., "Donny: " stays, only the quoted text changes).
+Replace each original dialogue line with its rewritten version, preserving the speaker attribution format. If no scene matches the rewrite lines, output the original prompt unchanged.
 
 ## Output
 Rewritten prompt text only. No explanations, no JSON."""
