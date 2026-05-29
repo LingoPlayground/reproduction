@@ -212,6 +212,19 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
     # Sort by start time for correct playback order
     items.sort(key=lambda i: i.start_sec)
 
+    seedance_items = [i for i in items if i.source == "seedance"]
+    filtered = []
+    for item in items:
+        if item.source == "original":
+            overlaps = any(
+                item.start_sec < si.end_sec and item.end_sec > si.start_sec
+                for si in seedance_items
+            )
+            if overlaps:
+                continue
+        filtered.append(item)
+    items = filtered
+
     return TimelinePlan(
         title=getattr(script_output, "title", "Untitled") if script_output else "Untitled",
         level=level,
