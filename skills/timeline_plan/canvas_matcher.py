@@ -8,12 +8,16 @@ API:
 """
 from __future__ import annotations
 
+import logging
 import os
+import random
 import re
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
 from skills.timeline_plan.models import CanvasNode
+
+logger = logging.getLogger(__name__)
 
 
 # ── Module-level env loading (once, not per-call) ──────────────────
@@ -118,7 +122,6 @@ def match_lines_to_nodes(
         return {}, {}
     
     # Run LLM matching multiple times with shuffled node order
-    import random
     results: List[Dict[str, str]] = []  # Each result: {line_id → node_id}
     scores: List[float] = []
     
@@ -167,8 +170,7 @@ def _llm_match_run(
         prompt = node.prompt
         if len(prompt) > 3000:
             prompt = prompt[:3000] + "..."
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "Truncating prompt for node %s from %d → %d chars — dialogue near end may be lost",
                 node.node_id, len(node.prompt), 3000
             )

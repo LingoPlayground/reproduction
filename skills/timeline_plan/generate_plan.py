@@ -197,7 +197,6 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
                     seedance_duration=normalize_seedance_duration(max_end - min_start),
                     original_duration=max_end - min_start,
                 ))
-            # All rewritten lines for this shot already covered by nodes → skip
             continue
 
         # Shot with NO rewritten lines → original segment
