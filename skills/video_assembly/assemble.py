@@ -76,10 +76,10 @@ def normalize_audio_loudness(input_path: str, output_path: str) -> None:
 
 
 def _write_concat_file(segment_paths: List[str], concat_path: str) -> str:
-    """Write ffmpeg concat file listing all segments."""
+    """Write ffmpeg concat file listing all segments (absolute paths)."""
     with open(concat_path, "w") as f:
         for p in segment_paths:
-            f.write(f"file '{p}'\n")
+            f.write(f"file '{os.path.abspath(p)}'\n")
     return concat_path
 
 
