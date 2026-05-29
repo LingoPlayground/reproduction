@@ -86,7 +86,7 @@ def determine_cut_points(
         raw_start = max(0.0, min(float(shot.start_seconds), video_duration))
         raw_end = max(0.0, min(float(shot.end_seconds), video_duration))
 
-        if raw_end <= raw_start:
+        if raw_end - raw_start < 1.0:
             raw_end = min(raw_start + 1.0, video_duration)
 
         start_cut = find_nearest_cut(scene_cuts, raw_start, tolerance)

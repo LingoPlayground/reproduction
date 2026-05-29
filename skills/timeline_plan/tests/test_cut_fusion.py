@@ -79,6 +79,12 @@ class TestDetermineCutPoints:
         results = determine_cut_points(shots, [], video_duration=20.0)
         assert results[0][1] - results[0][0] >= 1.0
 
+    def test_minimum_duration_positive_short(self):
+        """A positive but sub-1s duration should be extended to 1s."""
+        shots = [FakeShot(10.0, 10.5)]  # 0.5s duration
+        results = determine_cut_points(shots, [], video_duration=20.0)
+        assert results[0][1] - results[0][0] >= 1.0
+
     def test_gap_filling(self):
         shots = [FakeShot(0.0, 5.0), FakeShot(10.0, 15.0)]
         cuts = [CutPoint(5.0), CutPoint(7.5), CutPoint(10.0)]
