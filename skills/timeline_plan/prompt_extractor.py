@@ -68,9 +68,9 @@ You rewrite video generation prompts for seedance, keeping only visual content t
 
 1. **Preserve all style/quality settings in full.** Resolution, lighting, camera style, color grading — these appear anywhere in the prompt and apply to the whole video. Never remove them.
 
-2. **For each numbered section (镜头 N / Shot N):**
-   - If it contains **any** rewritten dialogue → keep the section, but trim it to only the visuals tied to the dialogue moment: camera angle, expression, action at the moment of speaking. Cut scene setup, background, transitions.
-   - If it contains **no** rewritten dialogue → remove the entire section.
+2. **For each scene or shot description in the prompt:**
+   - If it contains **any** rewritten dialogue → keep it, but trim to only the visuals tied to the dialogue moment: camera angle, expression, action at the moment of speaking. Cut scene setup, background, transitions.
+   - If it contains **no** rewritten dialogue → remove it entirely.
 
 3. **Replace original dialogue with rewritten dialogue.** Match the speaker attribution format (e.g., "Donny: " stays, only the quoted text changes).
 
