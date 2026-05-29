@@ -177,7 +177,9 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
         if needs_rewrite:
             if shot_line_ids - handled_rewrite_line_ids:
                 # This shot has unreplaced rewritten lines → degraded fallback
-                unmatched = [rl for rl in matching if rl["line_id"] not in handled_rewrite_line_ids]
+                unmatched = [rl for rl in matching
+                             if rl["line_id"] not in handled_rewrite_line_ids
+                             and str(rl.get("original", "")) != str(rl.get("rewritten", ""))]
                 if not unmatched:
                     continue
                 min_start = min(rl.get("start_seconds", start_s) for rl in unmatched)
@@ -191,7 +193,7 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
                     start_sec=min_start, end_sec=max_end,
                     scene_description=scene_desc,
                     rewritten_prompt=rewritten_prompt,
-                    degradation_level=3,
+                    degradation_level=2,
                     seedance_duration=normalize_seedance_duration(max_end - min_start),
                     original_duration=max_end - min_start,
                 ))
