@@ -83,6 +83,17 @@ def _write_concat_file(segment_paths: List[str], concat_path: str) -> str:
     return concat_path
 
 
+def _probe_duration(video_path: str) -> float:
+    """Get video duration in seconds using ffprobe."""
+    result = subprocess.run(
+        ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", video_path],
+        capture_output=True, text=True, check=True,
+    )
+    import json as _json
+    info = _json.loads(result.stdout)
+    return float(info.get("format", {}).get("duration", 0.0))
+
+
 def _download_image_locally(url: str) -> str:
     """Download a reference image to a temp file. Returns local path or empty string."""
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -250,13 +261,22 @@ async def assemble_video(
             ], capture_output=True, check=True)
             print(f"  [ORIG] Shot {item['shot_number']}: {item['start_sec']:.1f}s-{item['end_sec']:.1f}s")
         elif source == "seedance":
-            duration = item.get("seedance_duration")
-            if duration is None or duration < 0:
-                # None → compute from timeline, -1 → default smart-duration value
-                duration = max(5, round(item["end_sec"] - item["start_sec"])) if duration is None else 8
-            video_url = await _generate_via_seedance(item, duration)
+            planned_duration = item["end_sec"] - item["start_sec"]
+            video_url = await _generate_via_seedance(item, -1)
             if video_url and _download_video(video_url, Path(seg_path)):
-                print(f"  [SEED] Shot {item['shot_number']}: seedance {duration}s → {seg_path}")
+                # Probe actual duration and pad to planned time range
+                actual = _probe_duration(seg_path)
+                if actual > 0 and actual < planned_duration - 0.3:
+                    pad_sec = planned_duration - actual
+                    padded = str(work_dir / f"seg_{idx:03d}_padded.mp4")
+                    subprocess.run([
+                        "ffmpeg", "-y", "-i", seg_path,
+                        "-vf", f"tpad=stop_mode=clone:stop_duration={pad_sec:.2f}",
+                        "-af", f"apad=pad_dur={pad_sec:.2f}",
+                        padded,
+                    ], capture_output=True, check=True)
+                    os.replace(padded, seg_path)
+                print(f"  [SEED] Shot {item['shot_number']}: seedance {actual:.1f}s (planned {planned_duration:.1f}s)")
             else:
                 # Fallback to original segment — don't crash on ffmpeg failure
                 try:
