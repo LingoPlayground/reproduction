@@ -34,11 +34,12 @@ def _load_env():
         Path("~/workspace/shakespeare/.env").expanduser(),
     ]:
         if env_path.exists():
-            for line in open(env_path):
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip())
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip())
 
 _load_env()
 _SeedanceClient, _SeedanceModel, _AssetType, _SeedanceRatio, _SeedanceResolution = _ensure_seedance_import()
@@ -111,7 +112,8 @@ async def _upload_local_image(path: str, name: str) -> str:
         key = f"seedance_refs/{name}_{uuid.uuid4().hex[:8]}.png"
         bucket.put_object_from_file(key, path)
         url = bucket.sign_url('GET', key, 86400)
-        result = await _seedance_client.create_asset(url=url, asset_type=_AssetType.IMAGE, name=name)
+        resp = await _seedance_client.create_asset(url=url, asset_type=_AssetType.IMAGE, name=name)
+        aid = resp.get("data", {}).get("id", "") if isinstance(resp, dict) else ""
         if aid:
             await _seedance_client.wait_for_asset(aid, max_wait_time=120)
         return aid
@@ -246,9 +248,9 @@ async def assemble_video(
             ], capture_output=True, check=True)
             print(f"  [ORIG] Shot {item['shot_number']}: {item['start_sec']:.1f}s-{item['end_sec']:.1f}s")
         elif source == "seedance":
-            duration = item.get("seedance_duration", normalize_seedance_duration(
+            duration = item.get("seedance_duration") or normalize_seedance_duration(
                 item["end_sec"] - item["start_sec"]
-            ))
+            )
             video_url = await _generate_via_seedance(item, duration)
             if video_url and _download_video(video_url, Path(seg_path)):
                 print(f"  [SEED] Shot {item['shot_number']}: seedance {duration}s → {seg_path}")

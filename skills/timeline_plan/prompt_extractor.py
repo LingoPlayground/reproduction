@@ -19,11 +19,12 @@ def _load_env():
         str(Path("~/workspace/shakespeare/.env").expanduser()),
     ]:
         if Path(env_path).exists():
-            for line in open(env_path):
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    os.environ.setdefault(k.strip(), v.strip())
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        os.environ.setdefault(k.strip(), v.strip())
 
 _load_env()
 

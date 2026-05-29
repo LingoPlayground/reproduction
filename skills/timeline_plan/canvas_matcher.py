@@ -26,11 +26,12 @@ def _load_env():
         str(_Path("~/workspace/shakespeare/.env").expanduser()),
     ]:
         if _Path(env_path).exists():
-            for line in open(env_path):
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    k, v = line.split("=", 1)
-                    _os.environ.setdefault(k.strip(), v.strip())
+            with open(env_path) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        _os.environ.setdefault(k.strip(), v.strip())
 
 _load_env()
 
@@ -58,7 +59,7 @@ def _score_mapping(mapping: Dict[str, str], lines: List[Any]) -> float:
     
     # Penalize when consecutive lines in same shot → different nodes
     for sn, slines in shot_lines.items():
-        slines.sort(key=lambda l: getattr(l, 'line_id', ''))
+        slines.sort(key=lambda l: getattr(l, 'start_seconds', 0.0))
         for i in range(len(slines) - 1):
             n1 = mapping.get(getattr(slines[i], 'line_id', ''))
             n2 = mapping.get(getattr(slines[i+1], 'line_id', ''))
