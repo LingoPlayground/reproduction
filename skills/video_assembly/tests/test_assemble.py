@@ -17,14 +17,14 @@ class TestNormalizeSeedanceDuration:
         assert normalize_seedance_duration(100.0) == -1
 
     def test_short_shot_fallback(self):
-        """Very short shots (< 2s) use clamped explicit duration."""
-        assert normalize_seedance_duration(0.5) == 5
-        assert normalize_seedance_duration(1.0) == 5
-        assert normalize_seedance_duration(1.9) == 5
+        """Very short shots (< 2s) use clamped explicit duration (min 4s)."""
+        assert normalize_seedance_duration(0.5) == 4
+        assert normalize_seedance_duration(1.0) == 4
+        assert normalize_seedance_duration(1.9) == 4
 
     def test_edge_cases(self):
         assert normalize_seedance_duration(2.0) == -1
-        assert normalize_seedance_duration(0.0) == 5
+        assert normalize_seedance_duration(0.0) == 4
 
 
 class TestNormalizeSegmentEncoding:

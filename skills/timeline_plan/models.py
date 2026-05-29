@@ -83,5 +83,5 @@ def normalize_seedance_duration(target_sec: float) -> int:
     For very short shots (< 2s), use original duration to avoid seedance errors.
     """
     if target_sec < 2.0:
-        return max(5, round(target_sec))
+        return max(4, round(target_sec))
     return -1  # Smart duration
