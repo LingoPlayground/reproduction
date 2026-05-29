@@ -77,5 +77,11 @@ class Stage3Input:
 
 
 def normalize_seedance_duration(target_sec: float) -> int:
-    """Round duration to nearest integer second, clamped to [5, 30] for seedance 2.0."""
-    return max(5, min(30, round(target_sec)))
+    """Map shot duration to seedance duration parameter.
+    
+    Returns -1 to enable seedance smart-duration mode (auto-determine best length).
+    For very short shots (< 2s), use original duration to avoid seedance errors.
+    """
+    if target_sec < 2.0:
+        return max(5, round(target_sec))
+    return -1  # Smart duration

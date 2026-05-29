@@ -1,26 +1,30 @@
 """Tests for video assembly module."""
 import os
+from skills.timeline_plan.models import normalize_seedance_duration
 from skills.video_assembly.assemble import (
-    normalize_seedance_duration,
     normalize_segment_encoding,
     _write_concat_file,
 )
 
 
 class TestNormalizeSeedanceDuration:
-    def test_rounds_to_nearest_int(self):
-        assert normalize_seedance_duration(3.7) == 5
-        assert normalize_seedance_duration(5.2) == 5
-        assert normalize_seedance_duration(5.8) == 6
-        assert normalize_seedance_duration(12.3) == 12
+    def test_smart_duration_default(self):
+        """Normal shots (>= 2s) return -1 for seedance smart-duration mode."""
+        assert normalize_seedance_duration(3.7) == -1
+        assert normalize_seedance_duration(5.2) == -1
+        assert normalize_seedance_duration(12.3) == -1
+        assert normalize_seedance_duration(30.0) == -1
+        assert normalize_seedance_duration(100.0) == -1
 
-    def test_clamps_to_range(self):
-        assert normalize_seedance_duration(2.0) == 5
-        assert normalize_seedance_duration(35.0) == 30
+    def test_short_shot_fallback(self):
+        """Very short shots (< 2s) use clamped explicit duration."""
+        assert normalize_seedance_duration(0.5) == 5
+        assert normalize_seedance_duration(1.0) == 5
+        assert normalize_seedance_duration(1.9) == 5
 
     def test_edge_cases(self):
-        assert normalize_seedance_duration(5.0) == 5
-        assert normalize_seedance_duration(30.0) == 30
+        assert normalize_seedance_duration(2.0) == -1
+        assert normalize_seedance_duration(0.0) == 5
 
 
 class TestNormalizeSegmentEncoding:
