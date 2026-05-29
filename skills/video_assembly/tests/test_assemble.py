@@ -8,14 +8,23 @@ from skills.video_assembly.assemble import (
 
 
 class TestNormalizeSeedanceDuration:
-    def test_rounds_and_clamps(self):
-        assert normalize_seedance_duration(3.7) == 4
-        assert normalize_seedance_duration(5.2) == 5
-        assert normalize_seedance_duration(5.8) == 6
-        assert normalize_seedance_duration(12.3) == 12
-        assert normalize_seedance_duration(35.0) == 30
+    def test_smart_duration_default(self):
+        """Normal shots (>= 2s) return -1 for seedance smart-duration mode."""
+        assert normalize_seedance_duration(3.7) == -1
+        assert normalize_seedance_duration(5.2) == -1
+        assert normalize_seedance_duration(12.3) == -1
+        assert normalize_seedance_duration(30.0) == -1
+        assert normalize_seedance_duration(100.0) == -1
+
+    def test_short_shot_fallback(self):
+        """Very short shots (< 2s) use clamped explicit duration (min 4s)."""
         assert normalize_seedance_duration(0.5) == 4
         assert normalize_seedance_duration(1.0) == 4
+        assert normalize_seedance_duration(1.9) == 4
+
+    def test_edge_cases(self):
+        assert normalize_seedance_duration(2.0) == -1
+        assert normalize_seedance_duration(0.0) == 4
 
 
 class TestNormalizeSegmentEncoding:

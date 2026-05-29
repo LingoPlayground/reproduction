@@ -79,7 +79,9 @@ class Stage3Input:
 def normalize_seedance_duration(target_sec: float) -> int:
     """Map shot duration to seedance duration parameter.
     
-    Clamped to [4, 30] seconds to match seedance API constraints and ensure
-    the generated video fills the TimelinePlan time slot without gaps.
+    For shots >= 2s: returns -1 (sentinel — assemble.py converts to default 8s).
+    For shots < 2s: returns max(4, round(target_sec)) to avoid seedance errors.
     """
-    return max(4, min(30, round(target_sec)))
+    if target_sec < 2.0:
+        return max(4, round(target_sec))
+    return -1  # Sentinel for auto-duration
