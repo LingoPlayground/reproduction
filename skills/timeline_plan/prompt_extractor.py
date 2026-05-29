@@ -118,12 +118,20 @@ def extract_prompt_fragment_for_lines(
                     break
 
         if hit_sections:
+            # Extract style header (content before first section boundary)
+            style_header = "\n".join(prompt_lines[0:boundaries[0]]).strip()
+
             # Extract the minimum spanning section range
             min_section = min(hit_sections)
             max_section = max(hit_sections)
             start_line = boundaries[min_section]
             end_line = boundaries[max_section + 1] if max_section + 1 < len(boundaries) else len(prompt_lines)
-            return "\n".join(prompt_lines[start_line:end_line]).strip()
+            body = "\n".join(prompt_lines[start_line:end_line]).strip()
+
+            # Combine: style header + target sections
+            if style_header:
+                return style_header + "\n\n" + body
+            return body
 
     # Fallback: context window around dialogue hits
     min_line = max(0, min(hit_lines) - context_lines)

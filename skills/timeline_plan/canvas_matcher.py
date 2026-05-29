@@ -224,114 +224,122 @@ def _fuzzy_match_text(asr_text: str, quotes: List[str]) -> float:
 def match_lines_to_nodes(
     lines: List[Any],
     nodes: List[CanvasNode],
-    use_llm: bool = True,
+    num_runs: int = 3,
 ) -> Dict[str, List[str]]:
-    """Match script lines to canvas nodes, returning line groupings per node.
-
-    Strategy:
-    1. Extract quoted dialogues from all node prompts (ground truth)
-    2. For each line, find the best-matching node by fuzzy matching
-       the ASR dialogue against each node's extracted quotes
-    3. Optionally use LLM for ambiguous cases (lines with low confidence)
-
+    """Match script lines to canvas nodes using LLM CoT + voting.
+    
+    LLM first identifies actual spoken dialogue in each node's prompt (CoT),
+    then matches each ASR line to the node containing that dialogue.
+    Multiple runs with shuffled node order reduce positional bias.
+    
     Args:
-        lines: Script lines, each with .line_id, .dialogue attributes.
+        lines: Script lines with .line_id, .dialogue attributes.
         nodes: All available canvas nodes.
-        use_llm: If True, use LLM for low-confidence cases.
-
+        num_runs: Number of LLM runs for voting (default 3).
+    
     Returns:
         Dict mapping node_id → list of line_ids assigned to that node.
     """
-    if not nodes:
+    if not nodes or not lines:
         return {}
-
-    # Step 1: Build quote index
-    quote_index = build_node_quote_index(nodes)
-
-    # Also build node_id → CanvasNode map for reference
-    node_map = {n.node_id: n for n in nodes}
-
-    # Step 2: Match each line
-    line_matches: Dict[str, List[str]] = {}  # node_id → [line_ids]
-    unmatched: List[Any] = []
-
-    for line in lines:
-        dialogue = getattr(line, 'dialogue', '') or ''
-        if not dialogue.strip():
-            continue
-
-        # Score against each node's quotes
-        best_node = None
-        best_score = 0.0
-        for node_id, quotes in quote_index.items():
-            score = _fuzzy_match_text(dialogue, quotes)
-            if score > best_score:
-                best_score = score
-                best_node = node_id
-
-        if best_node and best_score >= 0.2:
-            line_matches.setdefault(best_node, []).append(line.line_id)
-        else:
-            unmatched.append(line)
-
-    # Step 3: LLM fallback for unmatched or low-confidence matches
-    if use_llm and unmatched:
-        llm_matches = _llm_match_unmatched(unmatched, nodes, quote_index)
-        for node_id, lids in llm_matches.items():
-            line_matches.setdefault(node_id, []).extend(lids)
-
-    return line_matches
+    
+    # Run LLM matching multiple times with shuffled node order
+    import random
+    results: List[Dict[str, str]] = []  # Each result: {line_id → node_id}
+    scores: List[int] = []
+    
+    for run in range(num_runs):
+        # Shuffle node order to reduce positional bias
+        shuffled = list(enumerate(nodes))
+        if run > 0:
+            random.shuffle(shuffled)
+        
+        mapping = _llm_match_run(lines, shuffled)
+        if mapping:
+            results.append(mapping)
+            scores.append(len(mapping))
+    
+    if not results:
+        return {}
+    
+    # Pick the best run (most lines matched)
+    best_idx = scores.index(max(scores))
+    best_mapping = results[best_idx]
+    
+    # Group line_ids by node_id
+    node_groups: Dict[str, List[str]] = {}
+    for line_id, node_id in best_mapping.items():
+        node_groups.setdefault(node_id, []).append(line_id)
+    
+    return node_groups
 
 
-def _llm_match_unmatched(
+def _llm_match_run(
     lines: List[Any],
-    nodes: List[CanvasNode],
-    quote_index: Dict[str, List[str]],
-) -> Dict[str, List[str]]:
-    """Use LLM to match unmatched lines to nodes.
-
-    Much simpler than the old e2e match: per-line, not global alignment.
+    indexed_nodes: List[tuple],
+) -> Optional[Dict[str, str]]:
+    """Single LLM run: CoT dialogue extraction + line-to-node matching.
+    
+    Returns {line_id → node_id} or None on failure.
     """
-    if not lines:
-        return {}
+    # Build compact node catalog — use index as node reference, full prompt for LLM context
+    node_entries = []
+    for idx, node in indexed_nodes:
+        # Truncate very long prompts to save tokens (LLM only needs to find dialogue)
+        prompt = node.prompt
+        if len(prompt) > 3000:
+            prompt = prompt[:3000] + "..."
+        node_entries.append({
+            "id": idx,
+            "node_id": node.node_id,
+            "prompt": prompt,
+        })
+    
+    # Build line catalog
+    line_entries = []
+    for l in lines:
+        dialogue = getattr(l, 'dialogue', '') or ''
+        line_entries.append({
+            "line_id": getattr(l, 'line_id', ''),
+            "dialogue": dialogue,
+        })
+    
+    system_msg = """## Role
+You match script dialogue lines to the canvas nodes that generated them.
 
-    # Build a compact context: each node's quotes
-    node_context = []
-    for node in nodes:
-        quotes = quote_index.get(node.node_id, [])
-        if quotes:
-            node_context.append({
-                "node_id": node.node_id,
-                "quotes": quotes[:10],  # Cap to avoid token waste
-            })
+## Step 1: Extract Dialogue from Node Prompts (CoT)
+Each node's prompt is a video generation instruction. It contains:
+- Scene descriptions, camera directions, visual style (in Chinese)
+- Actual spoken dialogue (in English, often inside quotation marks "")
+- Non-dialogue quoted text: banner signs ("CLASS OF 2026"), sound effects ("黑胶唱片划痕声"), inner thoughts, character descriptions
 
-    if not node_context:
-        return {}
+For each node, identify ONLY the actual spoken English dialogue lines. Ignore everything else.
 
-    lines_text = "\n".join(
-        f'{l.line_id}: "{l.dialogue}"'
-        for l in lines
-    )
+## Step 2: Match Lines to Nodes
+For each script line, find the node whose prompt contains that dialogue. The script dialogue comes from ASR — expect minor errors (punctuation, capitalization, word substitutions). Match semantically.
 
-    quotes_text = "\n".join(
-        f'{nc["node_id"]}: {nc["quotes"]}'
-        for nc in node_context
-    )
+## Output
+JSON only:
+```json
+{"mappings": [
+  {"line_id": "p001_l001", "node_index": 0},
+  {"line_id": "p001_l003", "node_index": 2}
+]}
+```
+Use `node_index` (the "id" field from the node catalog), NOT `node_id`.
 
-    system_msg = """Match script lines to canvas nodes based on dialogue similarity.
-The node quotes are GROUND TRUTH. The line dialogue is ASR (may have errors).
-For each line, pick the node whose quotes best match the dialogue.
-Ignore capitalization, punctuation, minor typos, and trailing character names.
-Output ONLY valid JSON with format: {"mappings": [{"line_id": "...", "node_id": "..."}, ...]}"""
+If no node matches a line, omit it from the output."""
 
-    user_msg = f"""## Node Quotes (ground truth)
-{quotes_text}
+    import json as _j
+    user_msg = f"""## Nodes
+{_j.dumps(node_entries, ensure_ascii=False)}
 
 ## Lines to Match
-{lines_text}
+{_j.dumps(line_entries, ensure_ascii=False)}
 
-Output the mapping for all {len(lines)} lines."""
+Output the mapping. First identify dialogue in each node's prompt, then match."""
 
+    # Load API key
     import os as _os
     from pathlib import Path as _Path
     for env_path in [
@@ -347,24 +355,28 @@ Output the mapping for all {len(lines)} lines."""
 
     api_key = _os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key:
-        return {}
+        return None
 
     try:
         from openai import OpenAI
-        client = OpenAI(api_key=api_key, base_url=_os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"))
+        client = OpenAI(
+            api_key=api_key,
+            base_url=_os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+        )
         resp = client.chat.completions.create(
             model=_os.environ.get("LLM_MATCH_MODEL", "deepseek-v4-flash"),
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg},
             ],
-            temperature=0.0, max_tokens=4096,
+            temperature=0.0,
+            max_tokens=4096,
         )
         text = resp.choices[0].message.content or ""
     except Exception:
-        return {}
+        return None
 
-    import json
+    # Parse JSON response
     try:
         obj_match = re.search(r'\{[^{]*"mappings"', text)
         if obj_match:
@@ -372,29 +384,33 @@ Output the mapping for all {len(lines)} lines."""
             depth = 0
             end = start
             for i in range(start, len(text)):
-                if text[i] in '{[':
-                    depth += 1
+                if text[i] in '{[': depth += 1
                 elif text[i] in '}]':
                     depth -= 1
                     if depth == 0:
                         end = i + 1
                         break
-            data = json.loads(text[start:end])
+            data = _j.loads(text[start:end])
         else:
-            data = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+            data = _j.loads(text)
+    except (_j.JSONDecodeError, ValueError):
         try:
-            data = json.loads(text.replace('\n', ' ').replace('  ', ' '))
-        except (json.JSONDecodeError, ValueError):
-            return {}
+            data = _j.loads(text.replace('\n', ' ').replace('  ', ' '))
+        except (_j.JSONDecodeError, ValueError):
+            return None
 
     mappings = data.get("mappings", data if isinstance(data, list) else [])
-    result: Dict[str, List[str]] = {}
+    
+    # Convert node_index → node_id
+    idx_to_node_id = {idx: node.node_id for idx, node in indexed_nodes}
+    
+    result: Dict[str, str] = {}
     for m in mappings:
         if not isinstance(m, dict):
             continue
         lid = m.get("line_id", "")
-        nid = m.get("node_id", "")
-        if lid and nid:
-            result.setdefault(nid, []).append(lid)
+        nidx = m.get("node_index")
+        if lid and nidx is not None and nidx in idx_to_node_id:
+            result[lid] = idx_to_node_id[nidx]
+    
     return result
