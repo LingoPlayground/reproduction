@@ -106,3 +106,18 @@ class TestGenerateTimelinePlan:
         inp = Stage3Input(script_output=script, rewrite_json=rewrite, level="B2")
         plan = generate_timeline_plan(inp)
         assert len(plan.items) >= 1  # gap-filling creates a full-length original segment
+
+    def test_short_rewritten_line_not_dropped(self):
+        shots = [FakeShot(1, 0.0, 10.0, "Opening", [FakeLine("p1_l1", "hello", 1.0, 2.0)])]
+        script = FakeScriptOutput(shots)
+        rewrite = {"level": "B2", "lines": [make_rewrite("p1_l1", "hello", "hi there", 1, 1.0, 2.0)]}
+        nodes = [CanvasNode(node_id="n1", prompt='He says "hello"', video_url="http://x.com/v.mp4", reference_images=["http://x.com/r.png"])]
+        inp = Stage3Input(script_output=script, rewrite_json=rewrite, canvas_nodes=nodes, level="B2")
+        plan = generate_timeline_plan(inp)
+        seedance_items = [i for i in plan.items if i.source == "seedance"]
+        assert len(seedance_items) >= 1, "Short group was silently dropped!"
+        item = seedance_items[0]
+        assert item.rewritten_prompt is not None
+        assert "hi there" in item.rewritten_prompt
+        assert item.duration_strategy is not None
+        assert item.duration_strategy in ("pad_after", "pad_before", "forced_min_duration")

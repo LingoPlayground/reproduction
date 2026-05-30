@@ -19,7 +19,8 @@ from skills.timeline_plan.models import (
 )
 from skills.timeline_plan.cut_fusion import determine_cut_points
 from skills.timeline_plan.canvas_matcher import match_lines_to_nodes
-from skills.timeline_plan.prompt_extractor import extract_and_rewrite_prompt
+from skills.timeline_plan.prompt_composer import compose_prompt_patch
+from skills.timeline_plan.duration_resolver import resolve_duration
 
 
 def _shot_needs_rewrite(shot: Any, rewrite_lines: List[Dict]) -> Tuple[bool, List[Dict]]:
@@ -365,14 +366,15 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
             duration = max_end - min_start
 
             if duration < MIN_SEEDANCE_DURATION:
-                group = _extend_short_group(group, set(line_ids), all_lines_map, line_to_node)
+                # v3: resolve duration instead of silent drop
+                group, duration_strategy, new_duration = resolve_duration(
+                    group, all_lines_map, line_to_node, MIN_SEEDANCE_DURATION
+                )
                 min_start = min(rl.get("start_seconds", 0.0) for rl in group)
                 max_end = max(rl.get("end_seconds", min_start + 1.0) for rl in group)
-                duration = max_end - min_start
-                if duration < MIN_SEEDANCE_DURATION:
-                    group_ids = {rl["line_id"] for rl in group}
-                    handled_rewrite_line_ids.update(group_ids)
-                    continue
+                duration = new_duration
+            else:
+                duration_strategy = "direct"
 
             # Snap to scene cut points for clean visual transitions
             min_start, max_end = _snap_boundaries(min_start, max_end, video_cuts)
@@ -390,8 +392,9 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
 
             prompt_str = node.prompt if node else ""
             rl_objects = _make_rl_objects(group)
-            rewritten_prompt = extract_and_rewrite_prompt(
-                prompt_str, rl_objects, scene_desc
+            operation_type = "literal_replace"
+            rewritten_prompt = compose_prompt_patch(
+                prompt_str, rl_objects, scene_desc, operation_type
             )
 
             seedance_dur = normalize_seedance_duration(duration)
@@ -414,6 +417,15 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
                 degradation_level=degradation_level,
                 seedance_duration=seedance_dur,
                 original_duration=duration,
+                operation_type=operation_type,
+                duration_strategy=duration_strategy,
+                covered_line_ids=sorted(group_ids),
+                borrowed_line_ids=[],
+                source_node_ids=[node_id] if node_id else [],
+                degradation_reason=(
+                    "duration_padded_to_meet_min_4s" if duration_strategy != "direct"
+                    else ""
+                ),
             ))
             handled_rewrite_line_ids.update(group_ids)
 
@@ -441,7 +453,7 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
                     continue
                 min_start, max_end = _snap_boundaries(min_start, max_end, video_cuts)
                 rl_objects = _make_rl_objects(unmatched)
-                rewritten_prompt = extract_and_rewrite_prompt("", rl_objects, scene_desc)
+                rewritten_prompt = compose_prompt_patch("", rl_objects, scene_desc, "full_fallback")
                 items.append(TimelinePlanItem(
                     shot_id=f"shot_{shot.shot_number}_fallback",
                     shot_number=shot.shot_number,
@@ -452,6 +464,12 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
                     degradation_level=2,
                     seedance_duration=normalize_seedance_duration(max_end - min_start),
                     original_duration=max_end - min_start,
+                    operation_type="full_fallback",
+                    duration_strategy="direct",
+                    covered_line_ids=sorted({rl["line_id"] for rl in unmatched}),
+                    borrowed_line_ids=[],
+                    source_node_ids=[],
+                    degradation_reason="no_matching_canvas_node",
                 ))
             continue
 
