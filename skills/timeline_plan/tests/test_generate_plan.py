@@ -79,9 +79,9 @@ class TestGenerateTimelinePlan:
         assert plan.items[1].source == "seedance"
 
     def test_degradation_level_tracking(self):
-        shots = [FakeShot(1, 0.0, 10.0, "Scene", [FakeLine("p1_l1", "unique text", 1.0, 2.0)])]
+        shots = [FakeShot(1, 0.0, 10.0, "Scene", [FakeLine("p1_l1", "unique text", 1.0, 6.0)])]
         script = FakeScriptOutput(shots)
-        rewrite = {"level": "B2", "lines": [make_rewrite("p1_l1", "unique text", "rewritten unique", 1, 1.0, 2.0)]}
+        rewrite = {"level": "B2", "lines": [make_rewrite("p1_l1", "unique text", "rewritten unique", 1, 1.0, 6.0)]}
         inp = Stage3Input(script_output=script, rewrite_json=rewrite, canvas_nodes=[], level="B2")
         plan = generate_timeline_plan(inp)
         assert len(plan.items) == 1
@@ -89,9 +89,9 @@ class TestGenerateTimelinePlan:
         assert plan.items[0].degradation_level > 0
 
     def test_json_serializable_output(self):
-        shots = [FakeShot(1, 0.0, 10.0, "Scene", [FakeLine("p1_l1", "hi", 1.0, 2.0)])]
+        shots = [FakeShot(1, 0.0, 10.0, "Scene", [FakeLine("p1_l1", "hi", 1.0, 6.0)])]
         script = FakeScriptOutput(shots)
-        rewrite = {"level": "B2", "lines": [make_rewrite("p1_l1", "hi", "hello", 1, 1.0, 2.0)]}
+        rewrite = {"level": "B2", "lines": [make_rewrite("p1_l1", "hi", "hello", 1, 1.0, 6.0)]}
         inp = Stage3Input(script_output=script, rewrite_json=rewrite, level="B2")
         plan = generate_timeline_plan(inp)
         json_str = json.dumps(asdict(plan), indent=2)

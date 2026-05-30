@@ -43,6 +43,58 @@ def _collect_ref_images(matched_node: Optional[CanvasNode], keyframes: List[KeyF
     return shot_kfs if shot_kfs else []
 
 
+def _extend_short_group(
+    group: List[Dict],
+    node_line_ids: set,
+    all_lines_map: Dict[str, Dict],
+    line_to_node: Dict[str, str],
+) -> List[Dict]:
+    """Extend a short group (< 4s) by including nearby lines from the same node.
+    
+    Searches forward and backward in time for lines in the same node
+    (including non-rewritten ones) until the total duration reaches 4s.
+    Returns the extended group as rewrite-compatible dicts.
+    """
+    min_start = min(rl.get("start_seconds", 0.0) for rl in group)
+    max_end = max(rl.get("end_seconds", 0.0) for rl in group)
+    group_ids = {rl["line_id"] for rl in group}
+    
+    # Collect candidate lines from same node, sorted by time
+    candidates = []
+    for lid, info in all_lines_map.items():
+        if lid not in group_ids and line_to_node.get(lid) and line_to_node[lid] in {line_to_node.get(list(group_ids)[0], '')}:
+            candidates.append(info)
+    candidates.sort(key=lambda l: l['start_seconds'])
+    
+    # Extend forward
+    for c in candidates:
+        if max_end - min_start >= MIN_SEEDANCE_DURATION:
+            break
+        if c['start_seconds'] >= max_end:
+            group.append({
+                'line_id': c['line_id'], 'speaker': c['speaker'],
+                'original': c['dialogue'], 'rewritten': c['dialogue'],
+                'start_seconds': c['start_seconds'], 'end_seconds': c['end_seconds'],
+                'shot_number': 0,
+            })
+            max_end = c['end_seconds']
+    
+    # Extend backward
+    for c in reversed(candidates):
+        if max_end - min_start >= MIN_SEEDANCE_DURATION:
+            break
+        if c['end_seconds'] <= min_start:
+            group.insert(0, {
+                'line_id': c['line_id'], 'speaker': c['speaker'],
+                'original': c['dialogue'], 'rewritten': c['dialogue'],
+                'start_seconds': c['start_seconds'], 'end_seconds': c['end_seconds'],
+                'shot_number': 0,
+            })
+            min_start = c['start_seconds']
+    
+    return group
+
+
 def _split_contiguous(rewrite_lines: List[Dict], max_gap_sec: float = 5.0) -> List[List[Dict]]:
     """Split rewrite lines into contiguous groups, then merge-up groups < MIN_SEEDANCE_DURATION.
     
@@ -134,9 +186,18 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
     # ── Build helpers ──────────────────────────────────────────
     # Map line_id → shot info (for time range lookup)
     line_id_to_shot: Dict[str, Any] = {}
+    all_lines_map: Dict[str, Dict] = {}
     for shot in shots:
         for line in (shot.lines or []):
-            line_id_to_shot[str(getattr(line, 'line_id', ''))] = shot
+            lid = str(getattr(line, 'line_id', ''))
+            line_id_to_shot[lid] = shot
+            all_lines_map[lid] = {
+                'line_id': lid,
+                'dialogue': getattr(line, 'dialogue', ''),
+                'speaker': getattr(line, 'speaker', ''),
+                'start_seconds': getattr(line, 'start_seconds', 0.0),
+                'end_seconds': getattr(line, 'end_seconds', 0.0),
+            }
 
     # Map node_id → CanvasNode
     node_map: Dict[str, CanvasNode] = {n.node_id: n for n in canvas_nodes}
@@ -186,10 +247,14 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
             duration = max_end - min_start
 
             if duration < MIN_SEEDANCE_DURATION:
-                # Isolated short group — fall back to original segment
-                group_ids = {rl["line_id"] for rl in group}
-                handled_rewrite_line_ids.update(group_ids)
-                continue
+                group = _extend_short_group(group, set(line_ids), all_lines_map, line_to_node)
+                min_start = min(rl.get("start_seconds", 0.0) for rl in group)
+                max_end = max(rl.get("end_seconds", min_start + 1.0) for rl in group)
+                duration = max_end - min_start
+                if duration < MIN_SEEDANCE_DURATION:
+                    group_ids = {rl["line_id"] for rl in group}
+                    handled_rewrite_line_ids.update(group_ids)
+                    continue
 
             first_shot = line_id_to_shot.get(group[0]["line_id"])
             scene_desc = getattr(first_shot, "scene_description", "") if first_shot else ""
@@ -248,6 +313,9 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
                     continue
                 min_start = min(rl.get("start_seconds", start_s) for rl in unmatched)
                 max_end = max(rl.get("end_seconds", end_s) for rl in unmatched)
+                if max_end - min_start < MIN_SEEDANCE_DURATION:
+                    handled_rewrite_line_ids.update({rl["line_id"] for rl in unmatched})
+                    continue
                 rl_objects = _make_rl_objects(unmatched)
                 rewritten_prompt = extract_and_rewrite_prompt("", rl_objects, scene_desc)
                 items.append(TimelinePlanItem(
