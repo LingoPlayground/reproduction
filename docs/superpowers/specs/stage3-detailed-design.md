@@ -77,8 +77,9 @@ generate_timeline_plan(Stage3Input)
 │     无节点匹配的行 (duration ≥ 4s) → TimelinePlanItem(source="seedance", deg=2)
 │     duration < 4s → fallback original
 │
-├─ 6. 重叠处理: 种子优先 + 区间切分
-│     original 项按 seedance 区间切分，保留未覆盖片段
+├─ 6. 重叠处理: 种子优先 + 区间切分 + 微小碎片清理
+│     original 按 seedance 区间切分 → 保留未覆盖片段
+│     < 0.5s 碎片 → 并入相邻同节点 seedance
 │
 └─ 7. 排序输出
      items.sort(by start_sec) → TimelinePlan
@@ -167,7 +168,7 @@ for each shot:
     if mapped to different nodes → score -= 0.5 (contiguity penalty)
 ```
 
-**选择策略**: 选 `_score_mapping` 分数最高的那次完整运行（Best-Run Selection），而非逐行的 Majority Voting。这保证了同一次运行内的连续性约束不被打破。
+**选择策略**: 选 `_score_mapping` 分数最高的那次完整运行（Best-Run Selection）。得分相同时，按 `_compute_consistency` 的平均置信度决胜（tie-breaker）。
 
 **置信度** (`_compute_consistency`): 用多次运行的交叉一致性估算每行的置信度。
 ```python
@@ -317,7 +318,18 @@ for each original item:
   for each seedance item:
     carve out seedance range from all segments
   create original TimelinePlanItems for remaining segments
+
+# Step 3: Clean up micro-segments (< 0.5s)
+  for each original fragment < 0.5s:
+    if adjacent seedance item exists (same node) → swallow into seedance range
+    else → keep as-is
 ```
+
+### 8.1 微小碎片吸收
+
+切分后的 original 片段如果 < 0.5s，ffmpeg 截取会导致画面闪烁。处理策略：
+- 夹在两段**同节点** seedance 之间 → 并入 seedance 范围（AI 多生成 0.5s 包裹它）
+- 处于边界 / 无同节点邻居 → 保留（或由 Stage 4 自然处理）
 
 ---
 
