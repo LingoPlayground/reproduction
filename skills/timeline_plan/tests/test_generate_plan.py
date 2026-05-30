@@ -2,7 +2,7 @@
 import json
 from dataclasses import asdict
 from skills.timeline_plan.models import TimelinePlan, CanvasNode, Stage3Input
-from skills.timeline_plan.generate_plan import generate_timeline_plan, _classify_operation_type, _fuzzy_word_match
+from skills.timeline_plan.generate_plan import generate_timeline_plan
 
 
 class FakeLine:
@@ -122,73 +122,6 @@ class TestGenerateTimelinePlan:
         assert item.duration_strategy is not None
         assert item.duration_strategy in ("pad_after", "pad_before", "forced_min_duration")
 
-
-def _rl(line_id, original, rewritten, start_s, end_s):
-    return {"line_id": line_id, "original": original, "rewritten": rewritten,
-            "start_seconds": start_s, "end_seconds": end_s}
-
-
-class TestClassifyOperationType:
-    def test_literal_replace_when_dialogue_in_prompt(self):
-        prompt = 'He says "hello" and "world"'
-        lines = [_rl("l1", "hello", "hi", 1.0, 2.0)]
-        result = _classify_operation_type(prompt, lines)
-        assert result == "literal_replace"
-
-    def test_semantic_insert_when_dialogue_missing(self):
-        prompt = "美式情景喜剧，真实的破防（面部特写）"
-        lines = [_rl("l1", "no no no", "No, no, no, this can't be.", 17.0, 18.0)]
-        result = _classify_operation_type(prompt, lines)
-        assert result == "semantic_insert"
-
-    def test_mixed_lines_prefer_literal(self):
-        prompt = 'He says "hello" during a breakdown scene'
-        lines = [
-            _rl("l1", "hello", "hi", 1.0, 2.0),
-            _rl("l2", "goodbye", "farewell", 3.0, 4.0),
-        ]
-        result = _classify_operation_type(prompt, lines)
-        assert result == "literal_replace"
-
-    def test_full_fallback_when_no_prompt(self):
-        lines = [_rl("l1", "hello", "hi", 1.0, 2.0)]
-        result = _classify_operation_type("", lines)
-        assert result == "full_fallback"
-
-    def test_unchanged_lines_ignored(self):
-        prompt = "美式情景喜剧"
-        lines = [_rl("l1", "hello", "hello", 1.0, 2.0)]
-        result = _classify_operation_type(prompt, lines)
-        assert result == "literal_replace"
-
-    def test_fuzzy_replace_with_asr_drift(self):
-        prompt = 'Donny says: "no, no, no!" '
-        lines = [_rl("l1", "no no no", "No, no, no, this can't be.", 1.0, 2.0)]
-        result = _classify_operation_type(prompt, lines)
-        assert result == "fuzzy_replace"
-
-    def test_fuzzy_replace_has_lower_priority_than_literal(self):
-        prompt = 'Donny says: "hello" and "no, no, no!"'
-        lines = [
-            _rl("l1", "hello", "hi", 1.0, 2.0),
-            _rl("l2", "no no no", "no", 3.0, 4.0),
-        ]
-        result = _classify_operation_type(prompt, lines)
-        assert result == "literal_replace"
-
-
-class TestFuzzyWordMatch:
-    def test_exact_match(self):
-        assert _fuzzy_word_match("hello world", "Donny says: hello world")
-
-    def test_punctuation_drift(self):
-        assert _fuzzy_word_match("no no no", 'Donny says: "no, no, no!"')
-
-    def test_partial_match_below_threshold(self):
-        assert not _fuzzy_word_match("hello world", "Donny says: goodbye")
-
-    def test_short_words_ignored(self):
-        assert not _fuzzy_word_match("no no", "nothing here")
 
 
 class TestEpisode1Scenario:

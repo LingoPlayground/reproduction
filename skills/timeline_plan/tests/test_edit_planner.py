@@ -1,7 +1,7 @@
 """Tests for evidence builder and edit planner."""
 from skills.timeline_plan.models import CanvasNode, EvidencePack
 from skills.timeline_plan.evidence_builder import build_evidence_pack
-from skills.timeline_plan.edit_planner import plan_edit, _fallback_plan
+from skills.timeline_plan.edit_planner import plan_edit, _fallback_plan, _fuzzy_word_match
 
 
 def _group(entries):
@@ -114,3 +114,17 @@ class TestEditPlanner:
         )
         plan = _fallback_plan(pack)
         assert plan["operation_type"] == "full_fallback"
+
+
+class TestFuzzyWordMatch:
+    def test_exact_match(self):
+        assert _fuzzy_word_match("hello world", "Donny says: hello world")
+
+    def test_punctuation_drift(self):
+        assert _fuzzy_word_match("no no no", 'Donny says: "no, no, no!"')
+
+    def test_partial_match_below_threshold(self):
+        assert not _fuzzy_word_match("hello world", "Donny says: goodbye")
+
+    def test_short_words_ignored(self):
+        assert not _fuzzy_word_match("no no", "nothing here")

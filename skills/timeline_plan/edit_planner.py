@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json as _json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +33,15 @@ def _load_env():
                         os.environ.setdefault(k.strip(), v.strip())
 
 _load_env()
+
+
+def _fuzzy_word_match(original: str, prompt: str, threshold: float = 0.6) -> bool:
+    words = [w.lower() for w in original.split() if len(w) >= 2]
+    if not words:
+        return False
+    prompt_lower = prompt.lower()
+    matched = sum(1 for w in words if re.search(r'\b' + re.escape(w) + r'\b', prompt_lower))
+    return matched / len(words) >= threshold
 
 
 _SYSTEM_PROMPT = """## Role
@@ -146,8 +156,6 @@ def _fallback_plan(evidence_pack: Any) -> Dict[str, Any]:
 
     any_literal = False
     any_fuzzy = False
-
-    from skills.timeline_plan.generate_plan import _fuzzy_word_match
 
     for line in getattr(evidence_pack, "target_lines", []):
         original = getattr(line, "original", "").strip()

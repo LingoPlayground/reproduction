@@ -50,46 +50,6 @@ def _collect_ref_images(matched_node: Optional[CanvasNode], keyframes: List[KeyF
     return shot_kfs if shot_kfs else []
 
 
-def _fuzzy_word_match(original: str, prompt: str, threshold: float = 0.6) -> bool:
-    import re
-    words = [w.lower() for w in original.split() if len(w) >= 2]
-    if not words:
-        return False
-    prompt_lower = prompt.lower()
-    matched = sum(1 for w in words if re.search(r'\b' + re.escape(w) + r'\b', prompt_lower))
-    return matched / len(words) >= threshold
-
-
-def _classify_operation_type(
-    node_prompt: str,
-    rewrite_lines: List[Dict],
-) -> str:
-    if not node_prompt:
-        return "full_fallback"
-
-    any_literal = False
-    any_fuzzy = False
-    any_implicit = False
-
-    for rl in rewrite_lines:
-        original = rl.get("original", "").strip()
-        rewritten = rl.get("rewritten", "").strip()
-        if not original or not rewritten or original == rewritten:
-            continue
-        if original in node_prompt:
-            any_literal = True
-        elif _fuzzy_word_match(original, node_prompt):
-            any_fuzzy = True
-        else:
-            any_implicit = True
-
-    if any_implicit and not any_literal and not any_fuzzy:
-        return "semantic_insert"
-    if any_fuzzy and not any_literal:
-        return "fuzzy_replace"
-    return "literal_replace"
-
-
 def _extend_short_group(
     group: List[Dict],
     node_line_ids: set,
