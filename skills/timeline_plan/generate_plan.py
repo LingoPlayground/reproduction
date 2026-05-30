@@ -59,10 +59,10 @@ def _extend_short_group(
     max_end = max(rl.get("end_seconds", 0.0) for rl in group)
     group_ids = {rl["line_id"] for rl in group}
     
-    # Collect candidate lines from same node, sorted by time
+    target_node = line_to_node.get(list(group_ids)[0]) if group_ids else None
     candidates = []
     for lid, info in all_lines_map.items():
-        if lid not in group_ids and line_to_node.get(lid) and line_to_node[lid] in {line_to_node.get(list(group_ids)[0], '')}:
+        if lid not in group_ids and line_to_node.get(lid) == target_node:
             candidates.append(info)
     candidates.sort(key=lambda l: l['start_seconds'])
     
@@ -193,6 +193,81 @@ def _merge_adjacent_originals(items):
         else:
             merged.append(item)
     return merged
+
+
+def _finalize_timeline(items, video_duration, min_original=0.5):
+    """Post-process timeline: overlap splitting, micro-fragment cleanup, gap filling, adjacent merging.
+    
+    All four operations combined in one pass to avoid redundant iterations and
+    interactive edge cases between sequential post-processing steps.
+    """
+    # Step 1: Split original items around seedance ranges
+    seedance_items = [i for i in items if i.source == "seedance"]
+    result = []
+    for item in items:
+        if item.source != "original":
+            result.append(item)
+            continue
+        segments = [(item.start_sec, item.end_sec)]
+        for si in seedance_items:
+            segments = _carve_out(segments, si.start_sec, si.end_sec)
+        for seg_start, seg_end in segments:
+            if seg_end - seg_start > 0.1:
+                result.append(TimelinePlanItem(
+                    shot_id=f"{item.shot_id}_seg", shot_number=item.shot_number,
+                    source="original", start_sec=seg_start, end_sec=seg_end,
+                    scene_description=item.scene_description,
+                    original_duration=seg_end - seg_start,
+                ))
+    
+    # Step 2: Swallow micro original fragments (< min_original) into adjacent seedance
+    i = 0
+    while i < len(result):
+        item = result[i]
+        if item.source != "original" or item.duration_sec >= min_original:
+            i += 1
+            continue
+        prev_seed = result[i - 1] if i > 0 and result[i - 1].source == "seedance" else None
+        next_seed = result[i + 1] if i + 1 < len(result) and result[i + 1].source == "seedance" else None
+        if prev_seed and prev_seed.matched_node_id:
+            prev_seed.end_sec = max(prev_seed.end_sec, item.end_sec)
+            prev_seed.original_duration = prev_seed.end_sec - prev_seed.start_sec
+        elif next_seed and next_seed.matched_node_id:
+            next_seed.start_sec = min(next_seed.start_sec, item.start_sec)
+            next_seed.original_duration = next_seed.end_sec - next_seed.start_sec
+        result.pop(i)
+    
+    # Step 3: Fill timeline gaps and merge adjacent originals in one sweep
+    result.sort(key=lambda i: i.start_sec)
+    merged = []
+    last_end = 0.0
+    for item in result:
+        if item.start_sec > last_end + 0.1:
+            merged.append(TimelinePlanItem(shot_id=f"gap_{last_end:.0f}", shot_number=0, source="original", start_sec=last_end, end_sec=item.start_sec, scene_description="", original_duration=item.start_sec - last_end))
+        if item.source == "original" and merged and merged[-1].source == "original":
+            merged[-1].end_sec = item.end_sec
+            merged[-1].original_duration = merged[-1].end_sec - merged[-1].start_sec
+        else:
+            merged.append(item)
+        last_end = max(last_end, item.end_sec)
+    if last_end < video_duration - 0.1:
+        merged.append(TimelinePlanItem(shot_id=f"gap_{last_end:.0f}", shot_number=0, source="original", start_sec=last_end, end_sec=video_duration, scene_description="", original_duration=video_duration - last_end))
+    
+    return merged
+
+
+def _carve_out(segments, carve_start, carve_end):
+    """Remove [carve_start, carve_end] from list of time segments."""
+    result = []
+    for seg_start, seg_end in segments:
+        if carve_start >= seg_end or carve_end <= seg_start:
+            result.append((seg_start, seg_end))
+        else:
+            if seg_start < carve_start:
+                result.append((seg_start, carve_start))
+            if seg_end > carve_end:
+                result.append((carve_end, seg_end))
+    return result
 
 
 def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
@@ -368,79 +443,8 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
             original_duration=end_s - start_s,
         ))
 
-    # Sort by start time for correct playback order
     items.sort(key=lambda i: i.start_sec)
-
-    # Split original items around seedance items (instead of removing entire original)
-    seedance_items = [i for i in items if i.source == "seedance"]
-    filtered = []
-    for item in items:
-        if item.source != "original":
-            filtered.append(item)
-            continue
-        # Carve out seedance time ranges from this original segment
-        segments = [(item.start_sec, item.end_sec)]
-        for si in seedance_items:
-            new_segments = []
-            for seg_start, seg_end in segments:
-                if si.start_sec >= seg_end or si.end_sec <= seg_start:
-                    new_segments.append((seg_start, seg_end))
-                else:
-                    if seg_start < si.start_sec:
-                        new_segments.append((seg_start, si.start_sec))
-                    if seg_end > si.end_sec:
-                        new_segments.append((si.end_sec, seg_end))
-            segments = new_segments
-            if not segments:
-                break
-        for seg_start, seg_end in segments:
-            if seg_end - seg_start > 0.1:
-                filtered.append(TimelinePlanItem(
-                    shot_id=f"{item.shot_id}_seg",
-                    shot_number=item.shot_number,
-                    source="original",
-                    start_sec=seg_start,
-                    end_sec=seg_end,
-                    scene_description=item.scene_description,
-                    original_duration=seg_end - seg_start,
-                ))
-    items = filtered
-
-    # Clean up micro-segments (< 0.5s): swallow into adjacent seedance items
-    MIN_ORIGINAL_DURATION = 0.5
-    cleaned = []
-    i = 0
-    while i < len(items):
-        item = items[i]
-        if item.source != "original" or item.duration_sec >= MIN_ORIGINAL_DURATION:
-            cleaned.append(item)
-            i += 1
-            continue
-        # Micro original fragment — extend nearest seedance neighbor to cover it
-        prev_seed = cleaned[-1] if cleaned and cleaned[-1].source == "seedance" else None
-        next_seed = items[i + 1] if i + 1 < len(items) and items[i + 1].source == "seedance" else None
-        
-        if prev_seed and prev_seed.matched_node_id:
-            prev_seed.end_sec = max(prev_seed.end_sec, item.end_sec)
-            prev_seed.original_duration = prev_seed.end_sec - prev_seed.start_sec
-        elif next_seed and next_seed.matched_node_id:
-            next_seed.start_sec = min(next_seed.start_sec, item.start_sec)
-            next_seed.original_duration = next_seed.end_sec - next_seed.start_sec
-            cleaned.append(next_seed)
-            i += 2
-            continue
-        else:
-            cleaned.append(item)
-        i += 1
-    items = cleaned
-
-    items.sort(key=lambda i: i.start_sec)
-
-    # Fill timeline gaps with original segments
-    items = _fill_timeline_gaps(items, video_duration)
-
-    # Merge adjacent original segments
-    items = _merge_adjacent_originals(items)
+    items = _finalize_timeline(items, video_duration)
 
     return TimelinePlan(
         title=getattr(script_output, "title", "Untitled") if script_output else "Untitled",
