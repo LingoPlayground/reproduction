@@ -306,6 +306,12 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
         [s.end_seconds for s in shots if hasattr(s, 'end_seconds')],
         default=60.0,
     )
+    # Extend to cover all ASR timestamps (may exceed multimodal shot boundaries)
+    max_asr_end = max(
+        (rl.get("end_seconds", 0.0) for rl in rewrite_lines_all),
+        default=0.0,
+    )
+    video_duration = max(video_duration, max_asr_end)
     cut_boundaries = determine_cut_points(shots, video_cuts, video_duration)
 
     # ── Build helpers ──────────────────────────────────────────
