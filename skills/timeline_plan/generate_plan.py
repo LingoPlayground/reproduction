@@ -253,15 +253,26 @@ def _carve_out(segments, carve_start, carve_end):
 def _snap_boundaries(start: float, end: float, cut_points: List[CutPoint], snap_window: float = 0.8, audio_padding: float = 0.15) -> Tuple[float, float]:
     """Snap ASR boundaries to nearest scene cut points for clean visual transitions.
     
-    Strategy: when an ASR boundary is within snap_window of a PySceneDetect cut point,
-    snap to that cut. Otherwise, add audio_padding to avoid ffmpeg clipping dialogue.
+    If the segment covers > 60% of the time between two consecutive cut points,
+    snap to those cut boundaries to replace the entire PySceneDetect shot.
+    Otherwise, snap individual boundaries within snap_window, or add audio_padding.
     """
     if not cut_points:
-        return start - audio_padding, end + audio_padding
+        return max(0.0, start - audio_padding), end + audio_padding
     
-    cut_times = [c.time_sec for c in cut_points]
+    cut_times = sorted([c.time_sec for c in cut_points])
     
-    final_start = start - audio_padding
+    # Check for shot-level replacement: > 60% coverage → snap to enclosing cuts
+    for i in range(len(cut_times) - 1):
+        shot_start, shot_end = cut_times[i], cut_times[i + 1]
+        if start >= shot_start and end <= shot_end:
+            coverage = (end - start) / max(shot_end - shot_start, 0.1)
+            if coverage > 0.6:
+                return shot_start, shot_end
+            break
+    
+    # Per-boundary snap
+    final_start = max(0.0, start - audio_padding)
     final_end = end + audio_padding
     
     closest_start = min(cut_times, key=lambda x: abs(x - start))
@@ -428,6 +439,7 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
                 if max_end - min_start < MIN_SEEDANCE_DURATION:
                     handled_rewrite_line_ids.update({rl["line_id"] for rl in unmatched})
                     continue
+                min_start, max_end = _snap_boundaries(min_start, max_end, video_cuts)
                 rl_objects = _make_rl_objects(unmatched)
                 rewritten_prompt = extract_and_rewrite_prompt("", rl_objects, scene_desc)
                 items.append(TimelinePlanItem(
