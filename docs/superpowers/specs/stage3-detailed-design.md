@@ -66,15 +66,19 @@ generate_timeline_plan(Stage3Input)
 │           ├─ seedance_duration: -1 (智能)
 │           ├─ rewritten_prompt: extract_and_rewrite_prompt(node.prompt, group)
 │           └─ match_confidence: mean of cross-run consistency
+│         if duration < 4s:
+│           → _extend_short_group: 纳入同节点临近台词(含不改写)延长至 ≥ 4s
+│           → 仍不足 4s → fallback original (忽略此改写)
 │
 ├─ 4. 剩余 shot: original 片段
 │     for each shot without rewritten lines → TimelinePlanItem(source="original")
 │
 ├─ 5. 未匹配改写行: degradation fallback
-│     无节点匹配的行 → TimelinePlanItem(source="seedance", degradation=2)
+│     无节点匹配的行 (duration ≥ 4s) → TimelinePlanItem(source="seedance", deg=2)
+│     duration < 4s → fallback original
 │
-├─ 6. 重叠移除: seedance 优先
-│     移除与 seedance 项时间重叠的 original 项
+├─ 6. 重叠处理: 种子优先 + 区间切分
+│     original 项按 seedance 区间切分，保留未覆盖片段
 │
 └─ 7. 排序输出
      items.sort(by start_sec) → TimelinePlan
@@ -245,15 +249,15 @@ Step 1: Split by time gap
   groups.append(current)
 
 Step 2: Merge-up short groups (only if gap ≤ MAX_GAP_SEC)
-  for each group:
-    if duration >= MIN_SEEDANCE_DURATION:
-      keep
-    else:
-      gap_forward = distance to next group
-      gap_backward = distance to previous group
-      if gap_forward ≤ MAX_GAP_SEC → merge-forward
-      elif gap_backward ≤ MAX_GAP_SEC → merge-backward
-      else → keep as isolated (caller falls back to original)
+  ...
+      else → keep as isolated → trigger _extend_short_group
+
+Step 3: Extend isolated short groups
+  _extend_short_group(group, node_line_ids, all_lines_map, line_to_node):
+    在同节点内向前/向后寻找临近台词（含不改写台词）
+    延长至 ≥ MIN_SEEDANCE_DURATION
+    纳入的台词中: 改写行用 rewritten, 不改写行用 original
+    返回扩展后的 group
 ```
 
 ### 5.2 示例
