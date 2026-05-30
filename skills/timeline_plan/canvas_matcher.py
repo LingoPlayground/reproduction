@@ -139,8 +139,19 @@ def match_lines_to_nodes(
     if not results:
         return {}, {}
     
-    # Pick the best run by quality score
-    best_idx = scores.index(max(scores))
+    # Pick the best run by quality score; tie-break on avg confidence
+    best_idx = 0
+    best_score = scores[0] if scores else 0
+    for i in range(1, len(scores)):
+        if scores[i] > best_score:
+            best_idx = i
+            best_score = scores[i]
+        elif scores[i] == best_score:
+            # Tie: pick run with higher average per-line confidence
+            prev_conf = sum(_compute_consistency([results[best_idx]]).values())
+            curr_conf = sum(_compute_consistency([results[i]]).values())
+            if curr_conf > prev_conf:
+                best_idx = i
     best_mapping = results[best_idx]
     
     # Compute per-line confidence from cross-run consistency

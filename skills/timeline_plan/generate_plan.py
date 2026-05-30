@@ -379,6 +379,34 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
                 ))
     items = filtered
 
+    # Clean up micro-segments (< 0.5s): swallow into adjacent seedance items
+    MIN_ORIGINAL_DURATION = 0.5
+    cleaned = []
+    i = 0
+    while i < len(items):
+        item = items[i]
+        if item.source != "original" or item.duration_sec >= MIN_ORIGINAL_DURATION:
+            cleaned.append(item)
+            i += 1
+            continue
+        # Micro original fragment — extend nearest seedance neighbor to cover it
+        prev_seed = cleaned[-1] if cleaned and cleaned[-1].source == "seedance" else None
+        next_seed = items[i + 1] if i + 1 < len(items) and items[i + 1].source == "seedance" else None
+        
+        if prev_seed and prev_seed.matched_node_id:
+            prev_seed.end_sec = max(prev_seed.end_sec, item.end_sec)
+            prev_seed.original_duration = prev_seed.end_sec - prev_seed.start_sec
+        elif next_seed and next_seed.matched_node_id:
+            next_seed.start_sec = min(next_seed.start_sec, item.start_sec)
+            next_seed.original_duration = next_seed.end_sec - next_seed.start_sec
+            cleaned.append(next_seed)
+            i += 2
+            continue
+        else:
+            cleaned.append(item)
+        i += 1
+    items = cleaned
+
     return TimelinePlan(
         title=getattr(script_output, "title", "Untitled") if script_output else "Untitled",
         level=level,
