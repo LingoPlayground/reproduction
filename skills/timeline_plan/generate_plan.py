@@ -250,6 +250,31 @@ def _carve_out(segments, carve_start, carve_end):
     return result
 
 
+def _snap_boundaries(start: float, end: float, cut_points: List[CutPoint], snap_window: float = 0.8, audio_padding: float = 0.15) -> Tuple[float, float]:
+    """Snap ASR boundaries to nearest scene cut points for clean visual transitions.
+    
+    Strategy: when an ASR boundary is within snap_window of a PySceneDetect cut point,
+    snap to that cut. Otherwise, add audio_padding to avoid ffmpeg clipping dialogue.
+    """
+    if not cut_points:
+        return start - audio_padding, end + audio_padding
+    
+    cut_times = [c.time_sec for c in cut_points]
+    
+    final_start = start - audio_padding
+    final_end = end + audio_padding
+    
+    closest_start = min(cut_times, key=lambda x: abs(x - start))
+    if abs(closest_start - start) <= snap_window:
+        final_start = closest_start
+    
+    closest_end = min(cut_times, key=lambda x: abs(x - end))
+    if abs(closest_end - end) <= snap_window:
+        final_end = closest_end
+    
+    return max(0.0, final_start), final_end
+
+
 def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
     script_output = input_data.script_output
     shots = list(script_output.script.shots) if script_output else []
@@ -337,6 +362,9 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
                     group_ids = {rl["line_id"] for rl in group}
                     handled_rewrite_line_ids.update(group_ids)
                     continue
+
+            # Snap to scene cut points for clean visual transitions
+            min_start, max_end = _snap_boundaries(min_start, max_end, video_cuts)
 
             first_shot = line_id_to_shot.get(group[0]["line_id"])
             scene_desc = getattr(first_shot, "scene_description", "") if first_shot else ""
