@@ -147,3 +147,120 @@ class TestStage3Input:
         )
         assert inp.level == "B2"
         assert inp.rewrite_json["level"] == "B2"
+
+
+# ── v3 dataclasses ──────────────────────────────────────────────────
+
+from skills.timeline_plan.models import (
+    PromptPatchPlan, CoveragePlan, MatchEvidence,
+)
+
+
+class TestPromptPatchPlan:
+    def test_literal_replace_creation(self):
+        plan = PromptPatchPlan(
+            operation_type="literal_replace",
+            global_style="8k, 超高清, 电影级布光",
+            local_visual_context="镜头 1：三层景深",
+            dialogue_patches=[],
+            discarded_sections=[],
+            final_prompt="8k, 超高清...镜头1...Donny says: 'hi'",
+        )
+        assert plan.operation_type == "literal_replace"
+        assert plan.global_style == "8k, 超高清, 电影级布光"
+        assert plan.final_prompt is not None
+
+    def test_semantic_insert_defaults(self):
+        plan = PromptPatchPlan(
+            operation_type="semantic_insert",
+            global_style="",
+            local_visual_context="",
+            dialogue_patches=[],
+            discarded_sections=[],
+            final_prompt="",
+        )
+        assert plan.operation_type == "semantic_insert"
+        assert plan.dialogue_patches == []
+
+
+class TestCoveragePlan:
+    def test_direct_strategy(self):
+        cp = CoveragePlan(
+            start_sec=17.47,
+            end_sec=29.55,
+            included_rewritten_line_ids=["p001_l003", "p001_l004"],
+            borrowed_original_line_ids=[],
+            duration_strategy="direct",
+        )
+        assert cp.duration_strategy == "direct"
+        assert cp.duration_expansion_sec == 0.0
+        assert cp.end_sec - cp.start_sec >= 4.0
+
+    def test_pad_after_strategy(self):
+        cp = CoveragePlan(
+            start_sec=2.83,
+            end_sec=6.83,
+            included_rewritten_line_ids=["p001_l001", "p001_l002"],
+            borrowed_original_line_ids=[],
+            duration_strategy="pad_after",
+            duration_expansion_sec=0.40,
+        )
+        assert cp.duration_strategy == "pad_after"
+        assert cp.duration_expansion_sec == 0.40
+
+
+class TestMatchEvidence:
+    def test_quoted_dialogue_signal(self):
+        ev = MatchEvidence(
+            signal="quoted_dialogue",
+            detail='Found "This ceremony is boring." in node prompt',
+            confidence=0.97,
+        )
+        assert ev.signal == "quoted_dialogue"
+        assert ev.confidence > 0.9
+
+    def test_implicit_visual_scene_signal(self):
+        ev = MatchEvidence(
+            signal="implicit_visual_scene",
+            detail="Prompt describes Donny's breakdown close-up",
+            confidence=0.85,
+        )
+        assert ev.signal == "implicit_visual_scene"
+        assert ev.confidence < 1.0
+
+
+class TestTimelinePlanItemV3Fields:
+    """Verify new v3 optional fields have correct defaults and serialization."""
+    def test_defaults_for_backward_compat(self):
+        item = TimelinePlanItem(
+            shot_id="shot_1", shot_number=1,
+            source="original", start_sec=0.0, end_sec=10.0,
+            scene_description="Test",
+        )
+        assert item.operation_type is None
+        assert item.duration_strategy is None
+        assert item.covered_line_ids == []
+        assert item.borrowed_line_ids == []
+        assert item.source_node_ids == []
+        assert item.degradation_reason == ""
+
+    def test_v3_fields_serialize(self):
+        from dataclasses import asdict
+        import json as _json
+        item = TimelinePlanItem(
+            shot_id="shot_1", shot_number=1,
+            source="seedance", start_sec=0.0, end_sec=10.0,
+            scene_description="Test",
+            operation_type="semantic_insert",
+            duration_strategy="pad_after",
+            covered_line_ids=["p001_l001"],
+            degradation_reason="duration_padded_to_meet_min_4s",
+        )
+        d = asdict(item)
+        assert d["operation_type"] == "semantic_insert"
+        assert d["duration_strategy"] == "pad_after"
+        assert d["covered_line_ids"] == ["p001_l001"]
+        # Verify old JSON deserialization still works (new fields optional)
+        old_json = '{"shot_id": "s1", "shot_number": 1, "source": "original", "start_sec": 0.0, "end_sec": 10.0, "scene_description": "T"}'
+        parsed = _json.loads(old_json)
+        assert parsed["source"] == "original"

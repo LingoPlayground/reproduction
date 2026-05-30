@@ -46,6 +46,13 @@ class TimelinePlanItem:
     degradation_level: int = 0
     seedance_duration: Optional[float] = None
     original_duration: Optional[float] = None
+    # v3 tracking fields (Phase 1)
+    operation_type: Optional[str] = None
+    duration_strategy: Optional[str] = None
+    covered_line_ids: List[str] = field(default_factory=list)
+    borrowed_line_ids: List[str] = field(default_factory=list)
+    source_node_ids: List[str] = field(default_factory=list)
+    degradation_reason: str = ""
 
     @property
     def duration_sec(self) -> float:
@@ -74,6 +81,47 @@ class Stage3Input:
     rewrite_json: Dict[str, Any] = field(default_factory=dict)
     canvas_nodes: List[CanvasNode] = field(default_factory=list)
     level: str = "B2"
+
+
+@dataclass
+class PromptPatchPlan:
+    """Layered prompt editing plan: style + visual context + dialogue patches."""
+    operation_type: Literal[
+        "literal_replace", "fuzzy_replace", "semantic_insert",
+        "section_reconstruct", "style_preserving_fallback", "full_fallback"
+    ]
+    global_style: str
+    local_visual_context: str
+    dialogue_patches: List[Dict[str, str]] = field(default_factory=list)
+    discarded_sections: List[str] = field(default_factory=list)
+    final_prompt: str = ""
+
+
+@dataclass
+class CoveragePlan:
+    """Time coverage plan: what interval to generate and what strategy was used."""
+    start_sec: float
+    end_sec: float
+    included_rewritten_line_ids: List[str]
+    borrowed_original_line_ids: List[str]
+    duration_strategy: Literal[
+        "direct", "pad_after", "pad_before", "snap_to_cut",
+        "hold_reaction", "borrow_neighbor", "merge_same_node_group",
+        "cross_node_merge", "forced_min_duration"
+    ]
+    duration_expansion_sec: float = 0.0
+
+
+@dataclass
+class MatchEvidence:
+    """A single matching signal between a line group and a canvas node."""
+    signal: Literal[
+        "quoted_dialogue", "fuzzy_dialogue", "speaker_presence",
+        "visual_action", "shot_scene_similarity", "temporal_order",
+        "reference_image_match", "implicit_visual_scene"
+    ]
+    detail: str
+    confidence: float
 
 
 MIN_SEEDANCE_DURATION = 4.0
