@@ -44,6 +44,37 @@ def _collect_ref_images(matched_node: Optional[CanvasNode], keyframes: List[KeyF
     return shot_kfs if shot_kfs else []
 
 
+def _classify_operation_type(
+    node_prompt: str,
+    rewrite_lines: List[Dict],
+) -> str:
+    """Classify prompt editing operation type based on whether original dialogue exists in the node prompt.
+
+    Checks if each line's original dialogue text appears verbatim in the node prompt.
+    Lines that exist → literal_replace. Lines that don't → semantic_insert
+    (the visual context matches but there's no text anchor to replace).
+    """
+    if not node_prompt:
+        return "full_fallback"
+
+    any_literal = False
+    any_implicit = False
+
+    for rl in rewrite_lines:
+        original = rl.get("original", "").strip()
+        rewritten = rl.get("rewritten", "").strip()
+        if not original or not rewritten or original == rewritten:
+            continue
+        if original in node_prompt:
+            any_literal = True
+        else:
+            any_implicit = True
+
+    if any_implicit and not any_literal:
+        return "semantic_insert"
+    return "literal_replace"
+
+
 def _extend_short_group(
     group: List[Dict],
     node_line_ids: set,
@@ -392,7 +423,7 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
 
             prompt_str = node.prompt if node else ""
             rl_objects = _make_rl_objects(group)
-            operation_type = "literal_replace"
+            operation_type = _classify_operation_type(prompt_str, group)
             rewritten_prompt = compose_prompt_patch(
                 prompt_str, rl_objects, scene_desc, operation_type
             )
