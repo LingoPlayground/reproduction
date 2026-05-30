@@ -55,7 +55,7 @@ TimelinePlan:
 
 1. **筛选改写行**：比较 `original ≠ rewritten`，确定哪些行需要重新生成
 2. **LLM CoT 匹配**：将改写行与画布节点匹配。LLM 先识别每个节点 prompt 中的实际台词（区分对话 vs 标语/音效），再逐行匹配。3 次运行 + shuffled node order → voting 选最优，contiguity penalty 保证连续性
-3. **连续分组 + merge-up**：改写行按时间连续性分组（gap > 5s → 新组），短组（< 4s）合并到最近邻，孤立短组回退 original
+3. **连续分组 + 时长保障**：改写行按时间连续性分组（gap > 5s → 新组）。< 4s 的短组，在同一节点内纳入临近台词（即使是不改写的）一起延长至 ≥ 4s，生成视频覆盖改写 + 临近台词对应的原视频片段。仅完全孤立的短组才 fallback original
 4. **Prompt 改写**：LLM 处理每个节点组——保留风格设定，只保留含改写台词的 scene 段落，精准替换对话，移除不含改写台词的 scene
 5. **重叠处理**：seedance 项覆盖的时间范围内，移除 original 项（seedance 优先）
 

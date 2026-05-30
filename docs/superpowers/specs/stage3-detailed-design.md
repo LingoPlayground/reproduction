@@ -262,19 +262,21 @@ Step 2: Merge-up short groups (only if gap ≤ MAX_GAP_SEC)
 改写行时间: [2.8-4.2] [5.3-6.4] [17.5-18.3] [18.8-20.0] [21.1-29.6]
 
 Step 1: 按 gap > 5s 拆分
-  group A: [2.8-4.2, 5.3-6.4]    dur=3.6s ← < 4s, 孤立短组
+  group A: [2.8-4.2, 5.3-6.4]    dur=3.6s ← < 4s
   group B: [17.5-18.3, 18.8-20.0, 21.1-29.6]  dur=12.1s ✅
 
 Step 2: merge-up (需检查 gap ≤ MAX_GAP_SEC)
   group A (3.6s < 4s):
-    gap_forward = 17.5 - 6.4 = 11.1s > 5s  ← 不能合并
-    gap_backward = inf (无前组)
-    → 孤立短组, 保留为单独 group, caller 触发 fallback original
-  → 最终: group A → source="original" (不改写,保视频流畅)
-          group B → source="seedance" (12.1s ✅)
+    gap_forward = 17.5 - 6.4 = 11.1s > 5s  ← 不能直接合并
+    → 触发 _extend_short_group: 在同一节点内寻找临近台词
+    → 纳入 group A 之后的同节点台词（即使是不改写的）
+    → 延长时长至 ≥ 4s
+    → 生成 seedance 项覆盖改写台词 + 临近不改写台词
+    → 不改写台词在 prompt 中保留原文
+  → 最终: 1 个 seedance group ≥ 4s ✅
 ```
 
-> **设计决策**: 孤立短组 (< 4s 且距最近邻 > 5s) 宁可不改写也要保视频流畅。强行跨越 11s gap 合并会导致 seedance 生成大段无意义的空白/幻觉画面。
+> **设计原则**: 同一节点内，< 4s 的改写组纳入临近台词（即使是不改写的）一起生成，新视频覆盖改写台词 + 临近台词对应的原视频片段。只有完全孤立（无同节点临近台词）的短组才 fallback original。
 
 ---
 
