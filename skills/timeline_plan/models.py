@@ -124,6 +124,73 @@ class MatchEvidence:
     confidence: float
 
 
+# ── v3: Evidence Pack dataclasses ─────────────────────────────────────
+
+@dataclass
+class LineEvidence:
+    """A single script line packaged as evidence for the EditPlanner."""
+    line_id: str
+    speaker: str
+    original: str
+    rewritten: str
+    start_seconds: float
+    end_seconds: float
+    shot_number: int
+    shot_scene: str
+    rewrite_status: Literal["rewritten", "unchanged"] = "rewritten"
+
+
+@dataclass
+class VideoEvidence:
+    """Video-level evidence: keyframes and scene cuts."""
+    keyframe_paths: List[str] = field(default_factory=list)
+    scene_cuts: List[float] = field(default_factory=list)
+    video_path: Optional[str] = None
+
+
+@dataclass
+class NodeSection:
+    """A section within a canvas node prompt (e.g., 镜头 1, Scene 2)."""
+    section_id: str
+    description: str
+    contains_quoted_dialogue: bool = False
+    quoted_dialogue: List[str] = field(default_factory=list)
+    contains_implicit_dialogue_context: bool = False
+    implicit_context: str = ""
+
+
+@dataclass
+class CanvasNodeEvidence:
+    """Canvas node packaged as evidence with section analysis."""
+    node_id: str
+    name: str
+    full_prompt: str
+    sections: List[NodeSection] = field(default_factory=list)
+    reference_images: List[str] = field(default_factory=list)
+    node_video_url: Optional[str] = None
+
+
+@dataclass
+class Constraints:
+    """Generation constraints for seedance."""
+    min_seedance_duration: float = 4.0
+    max_seedance_duration: float = 30.0
+    must_preserve_rewritten_verbatim: bool = True
+    max_extension_gap_sec: float = 5.0
+
+
+@dataclass
+class EvidencePack:
+    """Complete evidence package sent to the EditPlanner LLM."""
+    group_id: str
+    target_lines: List[LineEvidence] = field(default_factory=list)
+    neighbor_lines: List[LineEvidence] = field(default_factory=list)
+    canvas_node: Optional[CanvasNodeEvidence] = None
+    matched_section_id: Optional[str] = None
+    video: Optional[VideoEvidence] = None
+    constraints: Optional[Constraints] = None
+
+
 MIN_SEEDANCE_DURATION = 4.0
 
 

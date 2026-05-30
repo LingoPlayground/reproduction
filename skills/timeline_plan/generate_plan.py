@@ -18,10 +18,12 @@ from skills.timeline_plan.models import (
     normalize_seedance_duration, MIN_SEEDANCE_DURATION,
 )
 from skills.timeline_plan.cut_fusion import determine_cut_points
-from skills.timeline_plan.canvas_matcher import match_lines_to_nodes
+from skills.timeline_plan.canvas_matcher import match_lines_to_nodes, segment_node_prompts
 from skills.timeline_plan.prompt_composer import compose_prompt_patch
 from skills.timeline_plan.duration_resolver import resolve_duration
 from skills.timeline_plan.validator import validate_timeline_item, validate_timeline_items
+from skills.timeline_plan.evidence_builder import build_evidence_pack
+from skills.timeline_plan.edit_planner import plan_edit
 import logging
 
 logger = logging.getLogger(__name__)
@@ -380,6 +382,11 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
     else:
         node_line_groups = {}
 
+    # ── v3: Section-level prompt analysis ──────────────────────
+    sections_by_node: Dict[str, List] = {}
+    if canvas_nodes:
+        sections_by_node = segment_node_prompts(canvas_nodes)
+
     # ── Build reverse map: line_id → node_id ───────────────────
     line_to_node: Dict[str, str] = {}
     for node_id, lids in node_line_groups.items():
@@ -436,7 +443,20 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
 
             prompt_str = node.prompt if node else ""
             rl_objects = _make_rl_objects(group)
-            operation_type = _classify_operation_type(prompt_str, group)
+
+            # v3: EditPlanner — LLM-driven operation_type classification
+            node_sections = sections_by_node.get(node_id, []) if node_id else []
+            evidence_pack = build_evidence_pack(
+                group_id=f"g_{node_id[:8] if node_id else 'fallback'}_{shot_num}",
+                rewrite_lines=group,
+                all_lines_map=all_lines_map,
+                node=node,
+                node_sections=node_sections,
+                keyframes=keyframes,
+                scene_cuts=video_cuts,
+            )
+            edit_plan = plan_edit(evidence_pack)
+            operation_type = edit_plan.get("operation_type", "literal_replace")
             rewritten_prompt = compose_prompt_patch(
                 prompt_str, rl_objects, scene_desc, operation_type
             )

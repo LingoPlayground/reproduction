@@ -312,3 +312,73 @@ Output the mapping. First identify dialogue in each node's prompt, then match.""
             result[lid] = idx_to_node_id[nidx]
     
     return result
+
+
+def segment_node_prompts(nodes: List[CanvasNode]) -> Dict[str, List]:
+    """Use LLM to segment each canvas node prompt into sections.
+
+    Returns {node_id: [{section_id, description, contains_quoted_dialogue, ...}]}.
+    Falls back to empty list if LLM unavailable.
+    """
+    from skills.timeline_plan.models import NodeSection
+
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not api_key or not nodes:
+        return {}
+
+    system_msg = """## Role
+Segment video generation prompts into logical sections (scenes/shots).
+
+## Task
+For each node's prompt, identify its logical sections. A section is a distinct
+scene description, typically marked by headers like "镜头 1", "Scene 2", etc.
+For each section, note whether it contains quoted English dialogue.
+
+## Output
+JSON only: {"sections": [{"node_id": "...", "section_id": "...", "description": "...", "contains_quoted_dialogue": true, "quoted_dialogue": ["text"], "contains_implicit_dialogue_context": false, "implicit_context": ""}]}"""
+
+    node_entries = []
+    for node in nodes:
+        node_entries.append({
+            "node_id": node.node_id,
+            "prompt": node.prompt[:3000],
+        })
+
+    import json as _j
+    user_msg = f"## Canvas Node Prompts\n{_j.dumps(node_entries, ensure_ascii=False, indent=2)}"
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=api_key,
+            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+        )
+        resp = client.chat.completions.create(
+            model=os.environ.get("LLM_MATCH_MODEL", "deepseek-v4-flash"),
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.0,
+            max_tokens=8192,
+        )
+        text = resp.choices[0].message.content or ""
+        text = text.strip().removeprefix("```json").removesuffix("```").strip()
+        data = _j.loads(text)
+
+        result: Dict[str, List] = {}
+        for sec in data.get("sections", []):
+            nid = sec.get("node_id", "")
+            if nid not in result:
+                result[nid] = []
+            result[nid].append(NodeSection(
+                section_id=sec.get("section_id", ""),
+                description=sec.get("description", ""),
+                contains_quoted_dialogue=sec.get("contains_quoted_dialogue", False),
+                quoted_dialogue=sec.get("quoted_dialogue", []),
+                contains_implicit_dialogue_context=sec.get("contains_implicit_dialogue_context", False),
+                implicit_context=sec.get("implicit_context", ""),
+            ))
+        return result
+    except Exception:
+        return {}
