@@ -93,6 +93,36 @@ dialogue context.
 ## Output
 Rewritten prompt text only. No explanations, no JSON."""
 
+    if operation_type == "fuzzy_replace":
+        return """## Role
+You rewrite video generation prompts for seedance. The original prompt contains
+dialogue that is SIMILAR to but not exactly matching the original text
+(due to ASR transcription drift, punctuation differences, etc.).
+
+## Instructions
+1. PRESERVE the global visual style settings verbatim.
+2. FIND the approximately matching dialogue in the prompt (may have minor differences).
+3. REPLACE it with the rewritten version, keeping the surrounding visual context.
+4. If the approximate match is ambiguous, match semantically.
+5. REMOVE scene sections with no rewritten dialogue.
+
+## Output
+Rewritten prompt text only. No explanations, no JSON."""
+
+    if operation_type == "section_reconstruct":
+        return """## Role
+You rewrite video generation prompts for seedance. A section of the original prompt
+is broken or incomplete (truncated, missing content, formatting errors).
+
+## Instructions
+1. PRESERVE the global visual style and all intact sections verbatim.
+2. RECONSTRUCT the broken section using scene context and rewritten dialogue.
+3. INSERT rewritten dialogue at appropriate positions in the reconstructed section.
+4. REMOVE only truly irrecoverable fragments.
+
+## Output
+Rewritten prompt text only. No explanations, no JSON."""
+
     return """## Role
 You rewrite video generation prompts for seedance, keeping only visual content tied to rewritten dialogue.
 
@@ -128,6 +158,18 @@ def _build_user_prompt(
 The original dialogue is NOT present as quoted text in the original prompt.
 Instead, a visual scene description matches the dialogue context.
 INSERT each rewritten dialogue line at the appropriate visual position."""
+    elif operation_type == "fuzzy_replace":
+        base += """
+
+## Operation: fuzzy_replace
+The original dialogue appears in the prompt with minor differences
+(punctuation, ASR drift, word order). Find and replace the approximate match."""
+    elif operation_type == "section_reconstruct":
+        base += """
+
+## Operation: section_reconstruct
+A section of the prompt is broken or incomplete.
+Reconstruct it from context and insert the rewritten dialogue."""
     else:
         base += """
 

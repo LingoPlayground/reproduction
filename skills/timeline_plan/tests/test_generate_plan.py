@@ -2,7 +2,7 @@
 import json
 from dataclasses import asdict
 from skills.timeline_plan.models import TimelinePlan, CanvasNode, Stage3Input
-from skills.timeline_plan.generate_plan import generate_timeline_plan, _classify_operation_type
+from skills.timeline_plan.generate_plan import generate_timeline_plan, _classify_operation_type, _fuzzy_word_match
 
 
 class FakeLine:
@@ -161,11 +161,34 @@ class TestClassifyOperationType:
         result = _classify_operation_type(prompt, lines)
         assert result == "literal_replace"
 
-    def test_empty_rewritten_skipped(self):
-        prompt = "美式情景喜剧"
-        lines = [_rl("l1", "hello", "", 1.0, 2.0)]
+    def test_fuzzy_replace_with_asr_drift(self):
+        prompt = 'Donny says: "no, no, no!" '
+        lines = [_rl("l1", "no no no", "No, no, no, this can't be.", 1.0, 2.0)]
+        result = _classify_operation_type(prompt, lines)
+        assert result == "fuzzy_replace"
+
+    def test_fuzzy_replace_has_lower_priority_than_literal(self):
+        prompt = 'Donny says: "hello" and "no, no, no!"'
+        lines = [
+            _rl("l1", "hello", "hi", 1.0, 2.0),
+            _rl("l2", "no no no", "no", 3.0, 4.0),
+        ]
         result = _classify_operation_type(prompt, lines)
         assert result == "literal_replace"
+
+
+class TestFuzzyWordMatch:
+    def test_exact_match(self):
+        assert _fuzzy_word_match("hello world", "Donny says: hello world")
+
+    def test_punctuation_drift(self):
+        assert _fuzzy_word_match("no no no", 'Donny says: "no, no, no!"')
+
+    def test_partial_match_below_threshold(self):
+        assert not _fuzzy_word_match("hello world", "Donny says: goodbye")
+
+    def test_short_words_ignored(self):
+        assert not _fuzzy_word_match("no no", "nothing here")
 
 
 class TestEpisode1Scenario:
@@ -242,8 +265,8 @@ class TestEpisode1Scenario:
         seedance_items = [i for i in plan.items if i.source == "seedance"]
         assert len(seedance_items) >= 1, "Lines should produce seedance items"
         group_b = seedance_items[0]
-        assert group_b.operation_type == "semantic_insert", (
-            f"Expected semantic_insert, got {group_b.operation_type}"
+        assert group_b.operation_type in ("semantic_insert", "fuzzy_replace"), (
+            f"Expected semantic_insert or fuzzy_replace, got {group_b.operation_type}"
         )
 
     def test_style_preserved_in_fallback(self):

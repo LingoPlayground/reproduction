@@ -21,6 +21,10 @@ from skills.timeline_plan.cut_fusion import determine_cut_points
 from skills.timeline_plan.canvas_matcher import match_lines_to_nodes
 from skills.timeline_plan.prompt_composer import compose_prompt_patch
 from skills.timeline_plan.duration_resolver import resolve_duration
+from skills.timeline_plan.validator import validate_timeline_item, validate_timeline_items
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _shot_needs_rewrite(shot: Any, rewrite_lines: List[Dict]) -> Tuple[bool, List[Dict]]:
@@ -44,20 +48,25 @@ def _collect_ref_images(matched_node: Optional[CanvasNode], keyframes: List[KeyF
     return shot_kfs if shot_kfs else []
 
 
+def _fuzzy_word_match(original: str, prompt: str, threshold: float = 0.6) -> bool:
+    import re
+    words = [w.lower() for w in original.split() if len(w) >= 2]
+    if not words:
+        return False
+    prompt_lower = prompt.lower()
+    matched = sum(1 for w in words if re.search(r'\b' + re.escape(w) + r'\b', prompt_lower))
+    return matched / len(words) >= threshold
+
+
 def _classify_operation_type(
     node_prompt: str,
     rewrite_lines: List[Dict],
 ) -> str:
-    """Classify prompt editing operation type based on whether original dialogue exists in the node prompt.
-
-    Checks if each line's original dialogue text appears verbatim in the node prompt.
-    Lines that exist → literal_replace. Lines that don't → semantic_insert
-    (the visual context matches but there's no text anchor to replace).
-    """
     if not node_prompt:
         return "full_fallback"
 
     any_literal = False
+    any_fuzzy = False
     any_implicit = False
 
     for rl in rewrite_lines:
@@ -67,11 +76,15 @@ def _classify_operation_type(
             continue
         if original in node_prompt:
             any_literal = True
+        elif _fuzzy_word_match(original, node_prompt):
+            any_fuzzy = True
         else:
             any_implicit = True
 
-    if any_implicit and not any_literal:
+    if any_implicit and not any_literal and not any_fuzzy:
         return "semantic_insert"
+    if any_fuzzy and not any_literal:
+        return "fuzzy_replace"
     return "literal_replace"
 
 
@@ -516,6 +529,16 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
 
     items.sort(key=lambda i: i.start_sec)
     items = _finalize_timeline(items, video_duration)
+
+    # L1/L2: validate timeline plan before serialization
+    validation_errors: List[str] = []
+    for item in items:
+        validation_errors.extend(validate_timeline_item(item))
+    validation_errors.extend(validate_timeline_items(items, video_duration))
+    if validation_errors:
+        logger.warning("Timeline plan validation: %d errors", len(validation_errors))
+        for err in validation_errors[:10]:
+            logger.warning("  %s", err)
 
     return TimelinePlan(
         title=getattr(script_output, "title", "Untitled") if script_output else "Untitled",
