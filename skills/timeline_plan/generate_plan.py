@@ -168,6 +168,33 @@ def _make_rl_objects(rewrite_lines: List[Dict]) -> List[SimpleNamespace]:
     return result
 
 
+def _fill_timeline_gaps(items, video_duration):
+    if not items:
+        return [TimelinePlanItem(shot_id="full", shot_number=0, source="original", start_sec=0, end_sec=video_duration, scene_description="", original_duration=video_duration)]
+    sorted_items = sorted(items, key=lambda i: i.start_sec)
+    result = []
+    last_end = 0.0
+    for item in sorted_items:
+        if item.start_sec > last_end + 0.1:
+            result.append(TimelinePlanItem(shot_id=f"gap_{last_end:.0f}", shot_number=0, source="original", start_sec=last_end, end_sec=item.start_sec, scene_description="", original_duration=item.start_sec - last_end))
+        result.append(item)
+        last_end = max(last_end, item.end_sec)
+    if last_end < video_duration - 0.1:
+        result.append(TimelinePlanItem(shot_id=f"gap_{last_end:.0f}", shot_number=0, source="original", start_sec=last_end, end_sec=video_duration, scene_description="", original_duration=video_duration - last_end))
+    return result
+
+
+def _merge_adjacent_originals(items):
+    merged = []
+    for item in items:
+        if item.source == "original" and merged and merged[-1].source == "original":
+            merged[-1].end_sec = item.end_sec
+            merged[-1].original_duration = merged[-1].end_sec - merged[-1].start_sec
+        else:
+            merged.append(item)
+    return merged
+
+
 def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
     script_output = input_data.script_output
     shots = list(script_output.script.shots) if script_output else []
@@ -406,6 +433,14 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
             cleaned.append(item)
         i += 1
     items = cleaned
+
+    items.sort(key=lambda i: i.start_sec)
+
+    # Fill timeline gaps with original segments
+    items = _fill_timeline_gaps(items, video_duration)
+
+    # Merge adjacent original segments
+    items = _merge_adjacent_originals(items)
 
     return TimelinePlan(
         title=getattr(script_output, "title", "Untitled") if script_output else "Untitled",

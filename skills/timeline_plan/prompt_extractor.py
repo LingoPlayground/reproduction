@@ -140,6 +140,7 @@ def extract_and_rewrite_prompt(
     
     Uses LLM to preserve style settings, keep only relevant scenes,
     and replace dialogue. Falls back to scene_description-based generation.
+    Validates that rewritten text appears in the output.
     
     Args:
         full_prompt: Complete canvas node prompt (empty if no match).
@@ -151,6 +152,21 @@ def extract_and_rewrite_prompt(
     """
     if not full_prompt:
         return _generate_prompt_from_scene(rewrite_lines, scene_description)
+    
+    result = _llm_rewrite_prompt(full_prompt, rewrite_lines, scene_description)
+    if result and _validate_rewrite(result, rewrite_lines):
+        return result
+    
+    return _generate_prompt_from_scene(rewrite_lines, scene_description)
+
+
+def _validate_rewrite(prompt: str, rewrite_lines: List[Any]) -> bool:
+    """Check that rewritten dialogue appears in the output prompt."""
+    for line in rewrite_lines:
+        rewritten = getattr(line, "rewritten", "") or ""
+        if rewritten.strip() and rewritten.strip() not in prompt:
+            return False
+    return True
     
     # Try LLM-based rewriting
     result = _llm_rewrite_prompt(full_prompt, rewrite_lines, scene_description)
