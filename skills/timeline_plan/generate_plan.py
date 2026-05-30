@@ -212,6 +212,13 @@ def _finalize_timeline(items, video_duration, min_original=0.5):
     
     # Step 3: Fill timeline gaps and merge adjacent originals in one sweep
     result.sort(key=lambda i: i.start_sec)
+
+    # Force timeline continuity: snap each item to the previous item's end
+    for i in range(1, len(result)):
+        result[i].start_sec = result[i - 1].end_sec
+        if hasattr(result[i], 'original_duration'):
+            result[i].original_duration = result[i].end_sec - result[i].start_sec
+
     merged = []
     last_end = 0.0
     for item in result:
@@ -333,6 +340,8 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
 
             first_shot = line_id_to_shot.get(group[0]["line_id"])
             scene_desc = getattr(first_shot, "scene_description", "") if first_shot else ""
+            if not scene_desc.strip():
+                scene_desc = group[0].get("shot_scene", "")
             shot_num = group[0].get("shot_number", 0)
 
             degradation_level = 0
