@@ -242,11 +242,81 @@ def compose_prompt_patch(
         return _generate_prompt_from_scene(rewrite_lines, scene_description)
 
     result = _llm_rewrite_prompt(full_prompt, rewrite_lines, scene_description, operation_type)
-    if result and _validate_rewrite(result, rewrite_lines, operation_type):
-        return result
 
+    # L3: dialogue inclusion validation
+    if not result or not _validate_rewrite(result, rewrite_lines, operation_type):
+        return _style_fallback(full_prompt, rewrite_lines, scene_description)
+
+    # L4: style preservation validation with retry
+    from skills.timeline_plan.validator import validate_style_preservation
+    passes, missing, ratio = validate_style_preservation(full_prompt, result)
+    if not passes:
+        result = _llm_rewrite_prompt_with_feedback(
+            full_prompt, rewrite_lines, scene_description, operation_type, missing
+        )
+        if result and _validate_rewrite(result, rewrite_lines, operation_type):
+            return result
+        return _style_fallback(full_prompt, rewrite_lines, scene_description)
+
+    return result
+
+
+def _style_fallback(full_prompt, rewrite_lines, scene_description):
     style_layer = _extract_style_prefix(full_prompt)
     if style_layer:
         return _generate_prompt_from_scene(rewrite_lines, scene_description, style_layer)
-
     return _generate_prompt_from_scene(rewrite_lines, scene_description)
+
+
+def _llm_rewrite_prompt_with_feedback(
+    full_prompt: str,
+    rewrite_lines: List[Any],
+    scene_description: str,
+    operation_type: str,
+    missing_anchors: List[str],
+) -> str:
+    mappings = []
+    for line in rewrite_lines:
+        original = getattr(line, "original", "") or getattr(line, "dialogue", "")
+        rewritten = getattr(line, "rewritten", "")
+        speaker = getattr(line, "speaker", "")
+        if rewritten.strip() and original.strip() != rewritten.strip():
+            mappings.append({
+                "speaker": speaker, "original": original.strip(),
+                "rewritten": rewritten.strip(),
+            })
+    if not mappings:
+        return ""
+
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not api_key:
+        return ""
+
+    import json as _j
+    feedback_msg = (
+        f"Previous rewrite preserved the dialogue but removed important visual style terms. "
+        f"Missing style terms: {', '.join(missing_anchors[:8])}. "
+        f"Please regenerate keeping these style terms verbatim."
+    )
+    user_msg = _build_user_prompt(full_prompt, mappings, scene_description, operation_type)
+    user_msg += f"\n\n## Feedback\n{feedback_msg}"
+
+    try:
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=api_key,
+            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+        )
+        resp = client.chat.completions.create(
+            model=os.environ.get("LLM_MATCH_MODEL", "deepseek-v4-flash"),
+            messages=[
+                {"role": "system", "content": _build_system_prompt(operation_type)},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.0,
+            max_tokens=8192,
+        )
+        text = resp.choices[0].message.content or ""
+        return text.strip()
+    except Exception:
+        return ""
