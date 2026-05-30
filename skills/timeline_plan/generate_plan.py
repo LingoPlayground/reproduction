@@ -312,6 +312,20 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
         default=0.0,
     )
     video_duration = max(video_duration, max_asr_end)
+
+    # Diagnose script-vs-ASR timing offset (Multimodal LLM boundaries may be unreliable)
+    for shot in shots:
+        sn = getattr(shot, "shot_number", 0)
+        shot_start = getattr(shot, "start_seconds", 0.0)
+        shot_end = getattr(shot, "end_seconds", 0.0)
+        asr_starts = [rl.get("start_seconds", 0.0) for rl in rewrite_lines_all
+                      if rl.get("shot_number") == sn and rl.get("start_seconds", 0) > 0]
+        if asr_starts:
+            asr_min = min(asr_starts)
+            offset = abs(asr_min - shot_start)
+            if offset > 10:
+                logger.warning("Shot %d: script boundary [%.1f-%.1fs] vs ASR [%.1fs] — offset %.0fs (multimodal LLM boundaries may be unreliable, using ASR timestamps)",
+                              sn, shot_start, shot_end, asr_min, offset)
     cut_boundaries = determine_cut_points(shots, video_cuts, video_duration)
 
     # ── Build helpers ──────────────────────────────────────────
