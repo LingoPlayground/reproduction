@@ -23,7 +23,6 @@ from skills.timeline_plan.prompt_composer import compose_prompt_patch
 from skills.timeline_plan.duration_resolver import resolve_duration
 from skills.timeline_plan.validator import validate_timeline_item, validate_timeline_items
 from skills.timeline_plan.evidence_builder import build_evidence_pack
-from skills.timeline_plan.edit_planner import plan_edit
 import logging
 
 logger = logging.getLogger(__name__)
@@ -48,6 +47,37 @@ def _collect_ref_images(matched_node: Optional[CanvasNode], keyframes: List[KeyF
         return list(matched_node.reference_images)
     shot_kfs = [kf.image_path for kf in keyframes if kf.shot_number == shot_number]
     return shot_kfs if shot_kfs else []
+
+
+def _fuzzy_word_match(original: str, prompt: str, threshold: float = 0.6) -> bool:
+    import re
+    words = [w.lower() for w in original.split() if len(w) >= 2]
+    if not words:
+        return False
+    prompt_lower = prompt.lower()
+    matched = sum(1 for w in words if re.search(r'\b' + re.escape(w) + r'\b', prompt_lower))
+    return matched / len(words) >= threshold
+
+
+def _classify_operation_type(node_prompt: str, rewrite_lines: List[Dict]) -> str:
+    if not node_prompt:
+        return "full_fallback"
+    any_literal = False
+    any_fuzzy = False
+    for rl in rewrite_lines:
+        original = rl.get("original", "").strip()
+        rewritten = rl.get("rewritten", "").strip()
+        if not original or not rewritten or original == rewritten:
+            continue
+        if original in node_prompt:
+            any_literal = True
+        elif _fuzzy_word_match(original, node_prompt):
+            any_fuzzy = True
+    if any_literal:
+        return "literal_replace"
+    if any_fuzzy:
+        return "fuzzy_replace"
+    return "semantic_insert"
 
 
 def _extend_short_group(
@@ -455,20 +485,7 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
 
             prompt_str = node.prompt if node else ""
             rl_objects = _make_rl_objects(group)
-
-            # v3: EditPlanner — LLM-driven operation_type classification
-            node_sections = sections_by_node.get(node_id, []) if node_id else []
-            evidence_pack = build_evidence_pack(
-                group_id=f"g_{node_id[:8] if node_id else 'fallback'}_{shot_num}",
-                rewrite_lines=group,
-                all_lines_map=all_lines_map,
-                node=node,
-                node_sections=node_sections,
-                keyframes=keyframes,
-                scene_cuts=video_cuts,
-            )
-            edit_plan = plan_edit(evidence_pack)
-            operation_type = edit_plan.get("operation_type", "literal_replace")
+            operation_type = _classify_operation_type(prompt_str, group)
             rewritten_prompt = compose_prompt_patch(
                 prompt_str, rl_objects, scene_desc, operation_type
             )

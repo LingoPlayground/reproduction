@@ -147,12 +147,23 @@ def match_lines_to_nodes(
             best_idx = i
             best_score = scores[i]
         elif scores[i] == best_score:
-            # Tie: pick run with higher average per-line confidence
             prev_conf = sum(_compute_consistency([results[best_idx]]).values())
             curr_conf = sum(_compute_consistency([results[i]]).values())
             if curr_conf > prev_conf:
                 best_idx = i
     best_mapping = results[best_idx]
+    
+    # Augment with majority-voted lines from across all runs
+    for lid in _compute_consistency(results):
+        if lid not in best_mapping:
+            # Line matched in some runs but not the best — use majority vote
+            node_votes = {}
+            for r in results:
+                if lid in r:
+                    node_votes[r[lid]] = node_votes.get(r[lid], 0) + 1
+            if node_votes:
+                majority_node: str = max(node_votes, key=lambda k: node_votes[k])
+                best_mapping[lid] = majority_node
     
     # Compute per-line confidence from cross-run consistency
     line_confidences = _compute_consistency(results)
