@@ -176,12 +176,16 @@ def _make_rl_objects(rewrite_lines: List[Dict]) -> List[SimpleNamespace]:
 
 
 def _finalize_timeline(items, video_duration, min_original=0.5):
-    """Post-process timeline: overlap splitting, micro-fragment cleanup, gap filling, adjacent merging.
-    
-    All four operations combined in one pass to avoid redundant iterations and
-    interactive edge cases between sequential post-processing steps.
+    """Post-process timeline into non-overlapping sequence.
+
+    Principles:
+    1. Seedance items keep ASR-aligned positions (no start snapping).
+    2. Each seedance clamped to 4-10s: pad short, split long into equal segments.
+    3. Original items fill gaps between seedance, then merge adjacent originals.
     """
-    # Step 1: Split original items around seedance ranges
+    MAX_SEEDANCE = 10.0
+
+    # Step 1: Carve seedance ranges out of original items
     seedance_items = [i for i in items if i.source == "seedance"]
     result = []
     for item in items:
@@ -199,8 +203,44 @@ def _finalize_timeline(items, video_duration, min_original=0.5):
                     scene_description=item.scene_description,
                     original_duration=seg_end - seg_start,
                 ))
-    
-    # Step 2: Swallow micro original fragments (< min_original) into adjacent seedance
+
+    # Step 2: Clamp each seedance to 4-10s, split if > MAX_SEEDANCE
+    result2 = []
+    for item in result:
+        if item.source == "seedance":
+            dur = item.end_sec - item.start_sec
+            if dur < 4.0:
+                item.end_sec = item.start_sec + 4.0
+            elif dur > MAX_SEEDANCE:
+                covered = item.covered_line_ids
+                num_segs = max(2, round(dur / MAX_SEEDANCE))
+                seg_dur = dur / num_segs
+                for k in range(num_segs):
+                    s_start = round(item.start_sec + k * seg_dur, 1)
+                    s_end = round(item.start_sec + (k + 1) * seg_dur, 1)
+                    result2.append(TimelinePlanItem(
+                        shot_id=f"{item.shot_id}_p{k}", shot_number=item.shot_number,
+                        source="seedance",
+                        start_sec=s_start, end_sec=s_end,
+                        scene_description=item.scene_description,
+                        ref_images=item.ref_images,
+                        rewritten_prompt=item.rewritten_prompt,
+                        matched_node_id=item.matched_node_id,
+                        match_confidence=item.match_confidence,
+                        degradation_level=item.degradation_level,
+                        seedance_duration=item.seedance_duration,
+                        original_duration=s_end - s_start,
+                        operation_type=item.operation_type,
+                        duration_strategy=item.duration_strategy,
+                        covered_line_ids=covered,
+                    ))
+                continue
+        result2.append(item)
+    result = result2
+
+    # Step 3: Sort, swallow micro originals, merge adjacent originals, fill gaps
+    result.sort(key=lambda i: i.start_sec)
+
     i = 0
     while i < len(result):
         item = result[i]
@@ -211,35 +251,27 @@ def _finalize_timeline(items, video_duration, min_original=0.5):
         next_seed = result[i + 1] if i + 1 < len(result) and result[i + 1].source == "seedance" else None
         if prev_seed and prev_seed.matched_node_id:
             prev_seed.end_sec = max(prev_seed.end_sec, item.end_sec)
-            prev_seed.original_duration = prev_seed.end_sec - prev_seed.start_sec
         elif next_seed and next_seed.matched_node_id:
             next_seed.start_sec = min(next_seed.start_sec, item.start_sec)
-            next_seed.original_duration = next_seed.end_sec - next_seed.start_sec
         result.pop(i)
-    
-    # Step 3: Fill timeline gaps and merge adjacent originals in one sweep
-    result.sort(key=lambda i: i.start_sec)
-
-    # Force timeline continuity: snap each item to the previous item's end
-    for i in range(1, len(result)):
-        result[i].start_sec = result[i - 1].end_sec
-        if hasattr(result[i], 'original_duration'):
-            result[i].original_duration = result[i].end_sec - result[i].start_sec
 
     merged = []
     last_end = 0.0
     for item in result:
         if item.start_sec > last_end + 0.1:
-            merged.append(TimelinePlanItem(shot_id=f"gap_{last_end:.0f}", shot_number=0, source="original", start_sec=last_end, end_sec=item.start_sec, scene_description="", original_duration=item.start_sec - last_end))
+            merged.append(TimelinePlanItem(shot_id=f"gap_{last_end:.0f}", shot_number=0,
+                source="original", start_sec=last_end, end_sec=item.start_sec,
+                scene_description="", original_duration=item.start_sec - last_end))
         if item.source == "original" and merged and merged[-1].source == "original":
             merged[-1].end_sec = item.end_sec
-            merged[-1].original_duration = merged[-1].end_sec - merged[-1].start_sec
         else:
             merged.append(item)
         last_end = max(last_end, item.end_sec)
     if last_end < video_duration - 0.1:
-        merged.append(TimelinePlanItem(shot_id=f"gap_{last_end:.0f}", shot_number=0, source="original", start_sec=last_end, end_sec=video_duration, scene_description="", original_duration=video_duration - last_end))
-    
+        merged.append(TimelinePlanItem(shot_id=f"gap_{last_end:.0f}", shot_number=0,
+            source="original", start_sec=last_end, end_sec=video_duration,
+            scene_description="", original_duration=video_duration - last_end))
+
     return merged
 
 

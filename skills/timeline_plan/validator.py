@@ -105,15 +105,21 @@ def validate_timeline_items(items: List[Any], video_duration: float = 0.0) -> Li
                 f"but item {getattr(sorted_items[i + 1], 'shot_id', '?')} starts at {next_start:.2f}s"
             )
 
-    # Check for duplicate line coverage
+    # Check for duplicate line coverage (skip split seedance segments: same node = same source)
     seen_lines: Dict[str, str] = {}
+    seen_nodes: Dict[str, str] = {}
     for item in items:
+        node = getattr(item, "matched_node_id", None)
         for lid in getattr(item, "covered_line_ids", []) or []:
             if lid in seen_lines:
-                errors.append(
-                    f"Line {lid} covered by both {seen_lines[lid]} and {getattr(item, 'shot_id', '?')}"
-                )
+                prev_node = seen_nodes.get(lid, "")
+                if node and prev_node and node != prev_node:
+                    errors.append(
+                        f"Line {lid} covered by both {seen_lines[lid]} and {getattr(item, 'shot_id', '?')}"
+                    )
             seen_lines[lid] = getattr(item, "shot_id", "?")
+            if node:
+                seen_nodes[lid] = node
 
     # Check full duration coverage if provided
     if video_duration > 0 and sorted_items:
