@@ -3,6 +3,9 @@
 verify_match: checks coverage, duplicates, time, known IDs (no prompt check)
 verify_prompt: checks dialogue in rewritten prompt for a single group
 """
+# DEPRECATED in v4.0: validation covered by plan_finalizer.py + validator.py.
+# Kept for reference; will be removed in a future version.
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Set

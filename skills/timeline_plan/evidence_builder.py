@@ -8,6 +8,9 @@ Key insight from rewrite JSON: each line already has `shot_scene` with
 rich scene descriptions (from Stage 1 multimodal extraction). These are
 far better video context than keyframe paths (which the LLM can't see).
 """
+# DEPRECATED in v4.0: replaced by edit_atom_builder.py + segment_matcher.py.
+# Kept for reference; will be removed in a future version.
+
 from __future__ import annotations
 
 from typing import Any, Dict, List

@@ -5,6 +5,9 @@ Stage A2 (Fine):   LLM picks best match from candidates only (small context).
 Code: deterministic grouping by node_id + time proximity.
 Stage B (Rewrite): Per-group LLM rewrites the prompt.
 """
+# DEPRECATED in v4.0: replaced by segment_matcher.py + prompt_rewriter.py.
+# Kept for reference; will be removed in a future version.
+
 from __future__ import annotations
 
 import concurrent.futures
