@@ -8,9 +8,12 @@ Algorithm:
 """
 from __future__ import annotations
 
+import logging
 from typing import Any, List, Optional, Tuple
 
 from skills.timeline_plan.models import CutPoint
+
+logger = logging.getLogger(__name__)
 
 
 def find_nearest_cut(
@@ -113,6 +116,9 @@ def _snap_to_neighbor(
         prev_end = filled[i - 1][1]
         curr_start, curr_end = boundaries[i]
         if curr_start > prev_end:
+            gap = curr_start - prev_end
+            if gap > 1.0:
+                logger.warning("Gap %.1fs between shots absorbed by extending previous shot", gap)
             filled[i - 1][1] = curr_start
         filled.append([curr_start, curr_end])
 
