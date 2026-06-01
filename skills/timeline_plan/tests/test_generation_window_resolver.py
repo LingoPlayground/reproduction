@@ -110,6 +110,15 @@ class TestResolveGenerationWindows:
         windows = resolve_generation_windows(atoms=[], all_lines=[], canvas_nodes=[], video_duration=10.0)
         assert windows == []
 
+    def test_overlapping_different_node_windows_snapped(self):
+        a1 = _make_atom("A1", start=1.0, end=2.5, matched_node="n1", lines=[_make_line("L1", "a", "b")])
+        a2 = _make_atom("A2", start=2.8, end=4.2, matched_node="n2", lines=[_make_line("L2", "c", "d")])
+        nodes = [CanvasNode(node_id="n1", prompt="t1", video_url=""), CanvasNode(node_id="n2", prompt="t2", video_url="")]
+        windows = resolve_generation_windows(atoms=[a1, a2], all_lines=[], canvas_nodes=nodes, video_duration=10.0)
+        sorted_w = sorted(windows, key=lambda w: w.start_sec)
+        for i in range(len(sorted_w) - 1):
+            assert sorted_w[i].end_sec <= sorted_w[i + 1].start_sec + 0.1
+
 
 if __name__ == "__main__":
     import sys
