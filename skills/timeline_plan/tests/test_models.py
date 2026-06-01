@@ -1,6 +1,4 @@
 """Tests for models.py — v3.0 deterministic execution models."""
-import json
-from dataclasses import asdict
 from skills.timeline_plan.models import (
     CutPoint, AtomLine, EditAtom, GenerationWindow,
     CanvasNode, TimelinePlanItem, TimelinePlan,
@@ -190,6 +188,10 @@ class TestGenerationWindow:
     def test_duration_sec(self):
         window = GenerationWindow(window_id="W1", start_sec=3.0, end_sec=7.0, atoms=[])
         assert window.duration_sec == 4.0
+
+    def test_duration_sec_zero_clamped(self):
+        window = GenerationWindow(window_id="W1", start_sec=5.0, end_sec=3.0, atoms=[])
+        assert window.duration_sec == 0.0
 
     def test_defaults(self):
         window = GenerationWindow(window_id="W1", start_sec=0.0, end_sec=4.0, atoms=[])

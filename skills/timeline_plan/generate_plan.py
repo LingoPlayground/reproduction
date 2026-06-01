@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from dataclasses import asdict
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from skills.timeline_plan.models import (
     TimelinePlan, TimelinePlanItem, CanvasNode, CutPoint, Stage3Input,
@@ -177,7 +177,7 @@ def main():
 
     cuts: List[CutPoint] = []
     if args.cuts and Path(args.cuts).exists():
-        with open(args.cuts) as f:
+        with open(args.cuts, encoding="utf-8") as f:
             cuts = [CutPoint(time_sec=c["time_sec"]) for c in json.load(f)]
 
     class _SW:
