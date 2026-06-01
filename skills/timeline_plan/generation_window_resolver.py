@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from skills.timeline_plan.models import (
     EditAtom, AtomLine, GenerationWindow, CanvasNode,
@@ -10,6 +9,66 @@ from skills.timeline_plan.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _snap_to_safe_boundaries(
+    start_sec: float,
+    end_sec: float,
+    all_lines: list[AtomLine],
+    video_duration: float,
+) -> tuple[float, float]:
+    """Expand boundaries outward so they never cut through an ASR line."""
+    if not all_lines:
+        return start_sec, end_sec
+
+    lines_sorted = sorted(all_lines, key=lambda l: l.start_sec)
+
+    for line in lines_sorted:
+        if line.start_sec < start_sec < line.end_sec:
+            start_sec = line.start_sec
+            break
+
+    for line in reversed(lines_sorted):
+        if line.start_sec < end_sec < line.end_sec:
+            end_sec = line.end_sec
+            break
+
+    return max(0.0, start_sec), min(video_duration, end_sec)
+
+
+def _expand_to_min_duration(
+    start_sec: float,
+    end_sec: float,
+    all_lines: list[AtomLine],
+    video_duration: float,
+    min_duration_sec: float,
+) -> tuple[float, float]:
+    """Expand a range to min duration, preferring right side then left side."""
+    start_sec = max(0.0, start_sec)
+    end_sec = min(video_duration, end_sec)
+
+    for _ in range(3):
+        duration = end_sec - start_sec
+        if duration >= min_duration_sec:
+            break
+        deficit = min_duration_sec - duration
+        right_expand = min(deficit, video_duration - end_sec)
+        end_sec += right_expand
+        deficit -= right_expand
+        if deficit > 0:
+            start_sec -= min(deficit, start_sec)
+        start_sec, end_sec = _snap_to_safe_boundaries(
+            start_sec, end_sec, all_lines, video_duration,
+        )
+
+    return start_sec, end_sec
+
+
+def _mark_fallback(window: GenerationWindow, reason: str) -> None:
+    window.degradation_level = max(window.degradation_level, 5)
+    window.degradation_reason = (
+        f"{window.degradation_reason}; {reason}" if window.degradation_reason else reason
+    )
 
 
 def resolve_generation_windows(
@@ -42,7 +101,13 @@ def resolve_generation_windows(
             and prev.matched_node_id == atom.matched_node_id
         )
         if same_node and gap <= 2.0:
-            current.append(atom)
+            # Also check we don't exceed max duration
+            cur_duration = atom.end_sec - current[0].start_sec
+            if cur_duration <= max_duration_sec:
+                current.append(atom)
+            else:
+                groups.append(current)
+                current = [atom]
         else:
             groups.append(current)
             current = [atom]
@@ -53,20 +118,9 @@ def resolve_generation_windows(
         window_counter += 1
         group_start = min(a.start_sec for a in group)
         group_end = max(a.end_sec for a in group)
-        duration = group_end - group_start
-
-        # Expand short windows to at least min_duration_sec
-        if duration < min_duration_sec:
-            deficit = min_duration_sec - duration
-            right_room = video_duration - group_end
-            right_expand = min(deficit, right_room)
-            left_room = group_start
-            left_expand = min(deficit - right_expand, left_room)
-            group_end += right_expand
-            group_start -= left_expand
-
-        group_start = max(0.0, group_start)
-        group_end = min(video_duration, group_end)
+        group_start, group_end = _expand_to_min_duration(
+            group_start, group_end, all_lines, video_duration, min_duration_sec,
+        )
 
         primary = group[0]
         matched_nid = primary.matched_node_id
@@ -100,6 +154,50 @@ def resolve_generation_windows(
             degradation_level=degradation_level,
             degradation_reason=degradation_reason,
         ))
+
+    # Resolve overlapping executable windows. If two different-node windows are
+    # too close to both remain >= min duration, keep the earlier one and mark
+    # the later one as original fallback instead of emitting an invalid clip.
+    windows.sort(key=lambda w: w.start_sec)
+    resolved: list[GenerationWindow] = []
+    for w in windows:
+        if not resolved:
+            resolved.append(w)
+            continue
+        prev = resolved[-1]
+        if prev.end_sec > w.start_sec + 0.1:
+            if prev.matched_node_id and w.matched_node_id and prev.matched_node_id == w.matched_node_id:
+                merged_end = max(prev.end_sec, w.end_sec)
+                if merged_end - prev.start_sec <= max_duration_sec:
+                    prev.end_sec = merged_end
+                    prev.atoms.extend(w.atoms)
+                    prev.degradation_level = max(prev.degradation_level, w.degradation_level)
+                    prev.degradation_reason = (prev.degradation_reason + "; merged_" + w.window_id).strip("; ")
+                else:
+                    _mark_fallback(w, f"overlap_would_exceed_max_duration_with_{prev.window_id}")
+                    resolved.append(w)
+            else:
+                mid = (prev.end_sec + w.start_sec) / 2
+                prev_can_shrink = mid - prev.start_sec >= min_duration_sec
+                curr_can_shrink = w.end_sec - mid >= min_duration_sec
+                if prev_can_shrink and curr_can_shrink:
+                    prev.end_sec = mid
+                    w.start_sec = mid
+                    resolved.append(w)
+                else:
+                    _mark_fallback(w, f"overlap_too_tight_with_{prev.window_id}")
+                    resolved.append(w)
+        else:
+            resolved.append(w)
+    windows = resolved
+
+    for w in windows:
+        if w.degradation_level >= 5:
+            continue
+        if w.duration_sec < min_duration_sec:
+            _mark_fallback(w, "duration_below_min_after_resolution")
+        elif w.duration_sec > max_duration_sec:
+            _mark_fallback(w, "duration_above_max_after_resolution")
 
     logger.info("Window resolver: %d atoms -> %d windows", len(atoms), len(windows))
     return windows

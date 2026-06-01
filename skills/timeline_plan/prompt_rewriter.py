@@ -99,6 +99,8 @@ def rewrite_prompts_for_windows(
     model = os.environ.get("LLM_PLANNER_MODEL", _DEFAULT_MODEL)
 
     def rewrite_one(window: GenerationWindow) -> None:
+        if window.degradation_level >= 5:
+            return
         nid = window.matched_node_id
         if not nid or nid not in node_map:
             window.degradation_level = max(window.degradation_level, 3)

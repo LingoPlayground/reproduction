@@ -79,6 +79,19 @@ class TestRewritePromptsForWindows:
     def test_empty_windows_noop(self):
         rewrite_prompts_for_windows([], [], "B2")
 
+    @patch("skills.timeline_plan.prompt_rewriter._get_client")
+    def test_degraded_fallback_window_skips_llm(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        window = _make_window("W1", [_make_atom("A1", [_make_line("L1", "a", "b")])])
+        window.degradation_level = 5
+        nodes = [CanvasNode(node_id="n1", prompt="A scene: a", video_url="")]
+
+        rewrite_prompts_for_windows([window], nodes, "B2")
+
+        assert window.rewritten_prompt is None
+        mock_client.chat.completions.create.assert_not_called()
+
 
 if __name__ == "__main__":
     import sys

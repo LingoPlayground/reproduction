@@ -4,7 +4,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from skills.timeline_plan.models import TimelinePlan, TimelinePlanItem, GenerationWindow
+from skills.timeline_plan.models import (
+    TimelinePlan, TimelinePlanItem, GenerationWindow,
+    MIN_MODIFIED_DURATION, MAX_MODIFIED_DURATION,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +36,25 @@ def finalize_timeline_plan(
     items: list[TimelinePlanItem] = []
 
     # Step 1: Modified items from windows, excluding degraded-unmatched
-    valid_windows = [w for w in windows if w.degradation_level < 5 and w.rewritten_prompt]
+    def _is_valid_modified_window(window: GenerationWindow) -> bool:
+        return (
+            window.degradation_level < 5
+            and bool(window.rewritten_prompt)
+            and MIN_MODIFIED_DURATION <= window.duration_sec <= MAX_MODIFIED_DURATION
+        )
+
+    def _fallback_reason(window: GenerationWindow) -> str:
+        if window.degradation_reason:
+            return window.degradation_reason
+        if not window.rewritten_prompt:
+            return "missing_rewritten_prompt"
+        if window.duration_sec < MIN_MODIFIED_DURATION:
+            return "duration_below_min"
+        if window.duration_sec > MAX_MODIFIED_DURATION:
+            return "duration_above_max"
+        return "degraded_window"
+
+    valid_windows = [w for w in windows if _is_valid_modified_window(w)]
     fallback_windows = [w for w in windows if w not in valid_windows]
 
     for window in fallback_windows:
@@ -78,11 +99,33 @@ def finalize_timeline_plan(
 
     num_modified = sum(1 for i in items if i.source == "modified")
     num_original = sum(1 for i in items if i.source == "original")
+    fallback_line_ids = sorted({
+        line_id
+        for window in fallback_windows
+        for line_id in window.covered_line_ids
+    })
+    fallback_details = [
+        {
+            "window_id": window.window_id,
+            "reason": _fallback_reason(window),
+            "affected_line_ids": window.covered_line_ids,
+            "start_sec": window.start_sec,
+            "end_sec": window.end_sec,
+        }
+        for window in fallback_windows
+    ]
 
     plan = TimelinePlan(
         title=title, level=level,
         total_duration_sec=video_duration, items=items,
-        metadata={"num_items": len(items), "num_modified": num_modified, "num_original": num_original},
+        metadata={
+            "num_items": len(items),
+            "num_modified": num_modified,
+            "num_original": num_original,
+            "fallback_count": len(fallback_windows),
+            "fallback_line_ids": fallback_line_ids,
+            "fallbacks": fallback_details,
+        },
     )
 
     # Step 4: Validation

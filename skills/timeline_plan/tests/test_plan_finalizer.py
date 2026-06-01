@@ -90,8 +90,9 @@ class TestFinalizeTimelinePlan:
         assert plan.items[0].source == "original"
 
     def test_unmatched_window_becomes_original(self):
+        atom = _make_atom("A1", [_make_line("L1", "a", "b")])
         window = GenerationWindow(
-            window_id="W1", start_sec=2.0, end_sec=6.0, atoms=[],
+            window_id="W1", start_sec=2.0, end_sec=6.0, atoms=[atom],
             degradation_level=5, degradation_reason="unmatched_atom",
         )
         shots = [FakeShot(1, 0.0, 10.0, "scene")]
@@ -99,3 +100,16 @@ class TestFinalizeTimelinePlan:
         modified = [i for i in plan.items if i.source == "modified"]
         assert len(modified) == 0
         assert all(i.source == "original" for i in plan.items)
+        assert plan.metadata["fallback_count"] == 1
+        assert plan.metadata["fallback_line_ids"] == ["L1"]
+        assert plan.metadata["fallbacks"][0]["reason"] == "unmatched_atom"
+
+    def test_short_window_becomes_original_fallback(self):
+        window = _make_window("W1", start=2.0, end=3.0, atoms=[
+            _make_atom("A1", [_make_line("L1", "a", "b")]),
+        ])
+        shots = [FakeShot(1, 0.0, 10.0, "scene")]
+        plan = finalize_timeline_plan(windows=[window], shots=shots, video_duration=10.0, title="T", level="B2")
+        assert not [i for i in plan.items if i.source == "modified"]
+        assert plan.metadata["fallback_count"] == 1
+        assert plan.metadata["fallbacks"][0]["reason"] == "duration_below_min"

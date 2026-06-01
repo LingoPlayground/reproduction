@@ -111,13 +111,26 @@ class TestResolveGenerationWindows:
         assert windows == []
 
     def test_overlapping_different_node_windows_snapped(self):
-        a1 = _make_atom("A1", start=1.0, end=2.5, matched_node="n1", lines=[_make_line("L1", "a", "b")])
-        a2 = _make_atom("A2", start=2.8, end=4.2, matched_node="n2", lines=[_make_line("L2", "c", "d")])
+        a1 = _make_atom("A1", start=1.0, end=5.5, matched_node="n1", lines=[_make_line("L1", "a", "b")])
+        a2 = _make_atom("A2", start=5.0, end=9.5, matched_node="n2", lines=[_make_line("L2", "c", "d")])
         nodes = [CanvasNode(node_id="n1", prompt="t1", video_url=""), CanvasNode(node_id="n2", prompt="t2", video_url="")]
         windows = resolve_generation_windows(atoms=[a1, a2], all_lines=[], canvas_nodes=nodes, video_duration=10.0)
         sorted_w = sorted(windows, key=lambda w: w.start_sec)
         for i in range(len(sorted_w) - 1):
             assert sorted_w[i].end_sec <= sorted_w[i + 1].start_sec + 0.1
+        assert all(w.duration_sec >= 4.0 for w in sorted_w if w.degradation_level < 5)
+
+    def test_tight_different_node_windows_fallback_instead_of_short_modified(self):
+        a1 = _make_atom("A1", start=2.0, end=2.5, matched_node="n1", lines=[_make_line("L1", "a", "b")])
+        a2 = _make_atom("A2", start=3.0, end=3.5, matched_node="n2", lines=[_make_line("L2", "c", "d")])
+        nodes = [CanvasNode(node_id="n1", prompt="t1", video_url=""), CanvasNode(node_id="n2", prompt="t2", video_url="")]
+        windows = resolve_generation_windows(atoms=[a1, a2], all_lines=[], canvas_nodes=nodes, video_duration=10.0)
+        valid = [w for w in windows if w.degradation_level < 5]
+        fallback = [w for w in windows if w.degradation_level >= 5]
+        assert len(valid) == 1
+        assert valid[0].duration_sec >= 4.0
+        assert len(fallback) == 1
+        assert "overlap_too_tight" in fallback[0].degradation_reason
 
     def test_max_duration_enforced(self):
         atoms = []
@@ -137,6 +150,19 @@ class TestResolveGenerationWindows:
         windows = resolve_generation_windows(atoms=[atom], all_lines=all_lines, canvas_nodes=nodes, video_duration=10.0)
         w = windows[0]
         assert not (4.0 < w.end_sec < 4.5), f"Window end {w.end_sec} is inside line L2"
+
+    def test_asr_boundary_snap_keeps_min_duration(self):
+        atom_line = _make_line("L1", "a", "b", start=2.0, end=2.5)
+        atom = _make_atom("A1", start=2.0, end=2.5, matched_node="n1", lines=[atom_line])
+        all_lines = [
+            atom_line,
+            AtomLine(line_id="U1", speaker="S", original="x", rewritten="x",
+                     start_sec=5.5, end_sec=6.5, shot_scene="test"),
+        ]
+        nodes = [CanvasNode(node_id="n1", prompt="test", video_url="")]
+        windows = resolve_generation_windows(atoms=[atom], all_lines=all_lines, canvas_nodes=nodes, video_duration=10.0)
+        assert windows[0].duration_sec >= 4.0
+        assert not (5.5 < windows[0].end_sec < 6.5)
 
 
 if __name__ == "__main__":
