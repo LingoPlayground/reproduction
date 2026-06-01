@@ -8,19 +8,9 @@ Provides:
 from __future__ import annotations
 
 import os
-import subprocess
-from dataclasses import dataclass
 from typing import List
 
 from skills.timeline_plan.models import CutPoint
-
-
-@dataclass
-class KeyFrame:
-    """A keyframe extracted from video at a cut point boundary."""
-    time_sec: float
-    image_path: str
-    shot_number: int
 
 
 def detect_scene_boundaries(
@@ -73,62 +63,3 @@ def detect_node_internal_cuts(
         List of CutPoint objects sorted by time.
     """
     return detect_scene_boundaries(video_path, threshold=threshold)
-
-
-def extract_keyframes(
-    video_path: str,
-    cut_points: List[CutPoint],
-    output_dir: str,
-    shot_number: int = 0,
-) -> List[KeyFrame]:
-    """Extract keyframes from video at given cut point times.
-
-    Uses ffmpeg to extract single frames. Output files named
-    `keyframe_{shot_number}_{index:03d}.png`.
-
-    Args:
-        video_path: Path to the source video.
-        cut_points: Cut times at which to extract frames.
-        output_dir: Directory to save extracted frame images.
-        shot_number: Shot number for filename prefix.
-
-    Returns:
-        List of KeyFrame objects with paths to extracted images.
-    """
-    os.makedirs(output_dir, exist_ok=True)
-
-    duration = _probe_duration(video_path)
-
-    keyframes: List[KeyFrame] = []
-    for idx, cp in enumerate(cut_points):
-        t = max(0.0, min(cp.time_sec, max(0.0, duration - 0.1)))
-        out_path = os.path.join(output_dir, f"keyframe_{shot_number}_{idx:03d}.png")
-        subprocess.run(
-            [
-                "ffmpeg", "-y", "-ss", f"{t:.3f}",
-                "-i", video_path, "-frames:v", "1",
-                "-q:v", "2", out_path,
-            ],
-            capture_output=True, check=True,
-        )
-        if os.path.exists(out_path):
-            keyframes.append(KeyFrame(
-                time_sec=cp.time_sec,
-                image_path=out_path,
-                shot_number=shot_number,
-            ))
-    return keyframes
-
-
-def _probe_duration(video_path: str) -> float:
-    """Get video duration in seconds using ffprobe."""
-    import json as _json
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "quiet", "-print_format", "json",
-            "-show_format", video_path,
-        ],
-        capture_output=True, text=True, check=True,
-    )
-    info = _json.loads(result.stdout)
-    return float(info.get("format", {}).get("duration", 0.0))

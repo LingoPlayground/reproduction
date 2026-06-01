@@ -4,9 +4,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from skills.timeline_plan.models import CutPoint
-from skills.scene_detection.detect_scenes import (
-    detect_scene_boundaries, extract_keyframes, KeyFrame,
-)
+from skills.scene_detection.detect_scenes import detect_scene_boundaries
 
 
 class TestDetectSceneBoundaries:
@@ -92,40 +90,3 @@ class TestDetectSceneBoundaries:
         # Lower threshold = more sensitive = potentially more cuts
         assert len(cuts_low) >= len(cuts_high) - 1
 
-
-class TestExtractKeyframes:
-    def test_extract_keyframes(self, tmp_path):
-        """Extract keyframes from a simple video at given cut points."""
-        video = tmp_path / "test.mp4"
-        subprocess.run(
-            f"ffmpeg -y -f lavfi -i color=c=red:s=320x240:d=3 "
-            f"-c:v libx264 -pix_fmt yuv420p {video}",
-            shell=True, capture_output=True, check=True,
-        )
-        cut_points = [CutPoint(time_sec=1.0), CutPoint(time_sec=2.0)]
-        output_dir = tmp_path / "frames"
-        output_dir.mkdir()
-        keyframes = extract_keyframes(
-            str(video), cut_points, str(output_dir), shot_number=1
-        )
-        assert len(keyframes) == 2
-        for kf in keyframes:
-            assert isinstance(kf, KeyFrame)
-            assert kf.shot_number == 1
-            assert os.path.exists(kf.image_path), f"Missing: {kf.image_path}"
-
-    def test_extract_keyframes_clamps_oob_times(self, tmp_path):
-        """Out-of-bounds cut times are clamped to valid range."""
-        video = tmp_path / "test_oob.mp4"
-        subprocess.run(
-            f"ffmpeg -y -f lavfi -i color=c=red:s=320x240:d=1 "
-            f"-c:v libx264 -pix_fmt yuv420p {video}",
-            shell=True, capture_output=True, check=True,
-        )
-        cut_points = [CutPoint(time_sec=-1.0), CutPoint(time_sec=10.0)]
-        output_dir = tmp_path / "frames"
-        output_dir.mkdir()
-        keyframes = extract_keyframes(
-            str(video), cut_points, str(output_dir), shot_number=1
-        )
-        assert len(keyframes) == 2
