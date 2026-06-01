@@ -44,6 +44,23 @@ def _cuts_any_line(boundary: float, cluster_lines: list[dict]) -> bool:
     return False
 
 
+def _scene_similarity(desc_a: str, desc_b: str) -> bool:
+    if not desc_a or not desc_b:
+        return False
+
+    def tokens(text: str) -> set[str]:
+        return set(re.findall(r'\w+', text.lower()))
+
+    a_tokens = tokens(desc_a)
+    b_tokens = tokens(desc_b)
+    if not a_tokens or not b_tokens:
+        return False
+
+    overlap = a_tokens & b_tokens
+    ratio = len(overlap) / min(len(a_tokens), len(b_tokens))
+    return ratio >= 0.45
+
+
 def build_edit_atoms(
     script_shots: list[Any],
     rewrite_lines: list[dict],
@@ -132,4 +149,25 @@ def build_edit_atoms(
             ))
 
     atoms.sort(key=lambda a: a.start_sec)
+
+    # Cross-shot merge: adjacent shots with similar scene descriptions
+    merged_atoms: list[EditAtom] = []
+    for a in atoms:
+        if not merged_atoms:
+            merged_atoms.append(a)
+            continue
+        prev = merged_atoms[-1]
+        gap = a.start_sec - prev.end_sec
+        same_scene = _scene_similarity(prev.scene_description, a.scene_description)
+        if gap <= 1.0 and same_scene and prev.primary_shot_number != a.primary_shot_number:
+            # Merge into previous atom
+            prev.end_sec = max(prev.end_sec, a.end_sec)
+            prev.lines.extend(a.lines)
+            prev.shot_numbers = sorted(set(prev.shot_numbers + a.shot_numbers))
+            prev.boundary_reason = "cross_shot_merge"
+            prev.source_cut_times = sorted(set(prev.source_cut_times + a.source_cut_times))
+        else:
+            merged_atoms.append(a)
+    atoms = merged_atoms
+
     return atoms

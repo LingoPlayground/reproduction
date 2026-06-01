@@ -136,6 +136,31 @@ class TestBuildEditAtoms:
         atoms = build_edit_atoms(shots, rls, [], video_duration=10.0)
         assert len(atoms) >= 2
 
+    def test_cross_shot_merge_similar_scene(self):
+        rls = [
+            _make_rl("L1", "a", "b", start_sec=1.0, end_sec=2.0, shot_number=1, shot_scene="kitchen cooking"),
+            _make_rl("L2", "c", "d", start_sec=2.5, end_sec=3.5, shot_number=2, shot_scene="kitchen"),
+        ]
+        shots = [
+            FakeShot(1, 0.0, 2.5, "kitchen cooking scene"),
+            FakeShot(2, 2.5, 5.0, "kitchen scene continues"),
+        ]
+        atoms = build_edit_atoms(shots, rls, [], video_duration=10.0)
+        assert len(atoms) == 1
+        assert atoms[0].shot_numbers == [1, 2]
+
+    def test_cross_shot_no_merge_different_scene(self):
+        rls = [
+            _make_rl("L1", "a", "b", start_sec=1.0, end_sec=2.0, shot_number=1, shot_scene="kitchen"),
+            _make_rl("L2", "c", "d", start_sec=2.5, end_sec=3.5, shot_number=2, shot_scene="classroom"),
+        ]
+        shots = [
+            FakeShot(1, 0.0, 2.5, "kitchen scene"),
+            FakeShot(2, 2.5, 5.0, "classroom lecture"),
+        ]
+        atoms = build_edit_atoms(shots, rls, [], video_duration=10.0)
+        assert len(atoms) == 2
+
 
 if __name__ == "__main__":
     import sys
