@@ -9,9 +9,18 @@ from __future__ import annotations
 
 import os
 import subprocess
+from dataclasses import dataclass
 from typing import List
 
-from skills.timeline_plan.models import CutPoint, KeyFrame
+from skills.timeline_plan.models import CutPoint
+
+
+@dataclass
+class KeyFrame:
+    """A keyframe extracted from video at a cut point boundary."""
+    time_sec: float
+    image_path: str
+    shot_number: int
 
 
 def detect_scene_boundaries(
