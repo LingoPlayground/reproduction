@@ -43,11 +43,7 @@ def _get_seedance():
     Credential/env failures are retried on each call.
     """
     global _seedance_client, _seedance_available_cache
-    
-    from skills.common.env import load_pipeline_env
-    load_pipeline_env()
 
-    # Import failure is permanent — lingolens is either installed or not
     if _seedance_available_cache is False:
         return None, None, None, None, None, False
     

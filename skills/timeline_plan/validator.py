@@ -2,7 +2,7 @@
 
 L1: Structure     — field presence, types, value ranges on TimelinePlanItem
 L2: Cross-item    — no overlaps, full coverage, no duplicate lines
-L3: Dialogue      — rewritten text must appear verbatim (in prompt_composer.py)
+L3: Dialogue      — rewritten text must appear verbatim
 L4: Style         — original prompt's visual style keywords retained at ≥60%
 L5: LLM-Judge     — semantic consistency of rewritten prompt vs original
 """

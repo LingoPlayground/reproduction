@@ -507,7 +507,7 @@ def generate_plan_draft(evidence: Dict, canvas_nodes: Optional[List] = None) -> 
 
         logger.info("Rewriting %d groups...", len(gens))
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(gens), 5)) as pool:
-            pool.map(rewrite_one, gens)
+            list(pool.map(rewrite_one, gens))
         ok = sum(1 for g in gens if g.has_prompt)
         logger.info("Rewrite: %d/%d groups have prompt", ok, len(gens))
         for g in gens:

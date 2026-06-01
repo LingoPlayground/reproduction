@@ -13,7 +13,10 @@ Fail fast: any semantic problem (overlap, >30s, unmatched) is a ValueError.
 from __future__ import annotations
 
 import math
+import logging
 from typing import Any, Dict, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 from skills.timeline_plan.models import (
     CanvasNode, CutPoint, TimelinePlan, TimelinePlanItem,
@@ -200,6 +203,9 @@ def _finalize(
         # Small overlaps: snap boundary
         if modified_items[i].end_sec > modified_items[i + 1].start_sec:
             mid = (modified_items[i].end_sec + modified_items[i + 1].start_sec) / 2
+            logger.warning("Snapping overlap: %s [%.1f-%.1f] vs %s [%.1f-%.1f] → mid=%.1f",
+                          modified_items[i].shot_id, modified_items[i].start_sec, modified_items[i].end_sec,
+                          modified_items[i+1].shot_id, modified_items[i+1].start_sec, modified_items[i+1].end_sec, mid)
             modified_items[i].end_sec = mid
             modified_items[i + 1].start_sec = mid
 

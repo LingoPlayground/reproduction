@@ -47,26 +47,28 @@ class TestNormalize:
         mod = [i for i in plan.items if i.source == "modified"]
         assert mod[0].end_sec - mod[0].start_sec >= 4.0
 
-    def test_unmatched_raises(self):
+    def test_unmatched_creates_degraded_fallback(self):
         draft = MatchResult(unmatched_lines=[
             UnmatchedLine(line_id="L1", reason="no match", original="a", rewritten="b")
         ])
-        try:
-            normalize_plan(draft, [make_shot(1, 0, 15)], [], [], 15)
-            assert False, "should raise"
-        except ValueError as e:
-            assert "unmatched" in str(e).lower()
+        plan = normalize_plan(draft, [make_shot(1, 0, 15)], [], [], 15)
+        mod = [i for i in plan.items if i.source == "modified"]
+        assert len(mod) >= 1
+        # Unmatched line should appear as degraded (L5) modified item
+        unmatched_item = next((i for i in mod if "L1" in i.covered_line_ids), None)
+        assert unmatched_item is not None
+        assert unmatched_item.degradation_level == 5
 
-    def test_overlap_raises(self):
+    def test_large_overlap_raises(self):
         draft = MatchResult(node_generations=[
             NodeGeneration(group_id="G1", covered_line_ids=["L1"],
-                           source_time_range=SourceTimeRange(0, 5), rewritten_prompt="a",
+                           source_time_range=SourceTimeRange(0, 6), rewritten_prompt="a",
                            line_matches=[
                                LineNodeMatch(line_id="L1", original_line="x", rewritten_line="y",
                                              node_id="n1", match_reasoning="v", confidence=0.9)
                            ]),
             NodeGeneration(group_id="G2", covered_line_ids=["L2"],
-                           source_time_range=SourceTimeRange(3, 8), rewritten_prompt="b",
+                           source_time_range=SourceTimeRange(1, 8), rewritten_prompt="b",
                            line_matches=[
                                LineNodeMatch(line_id="L2", original_line="x", rewritten_line="y",
                                              node_id="n2", match_reasoning="v", confidence=0.9)
