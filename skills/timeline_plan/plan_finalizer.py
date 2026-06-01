@@ -32,8 +32,15 @@ def finalize_timeline_plan(
 ) -> TimelinePlan:
     items: list[TimelinePlanItem] = []
 
-    # Step 1: Modified items from windows
-    for window in windows:
+    # Step 1: Modified items from windows, excluding degraded-unmatched
+    valid_windows = [w for w in windows if w.degradation_level < 5 and w.rewritten_prompt]
+    fallback_windows = [w for w in windows if w not in valid_windows]
+
+    for window in fallback_windows:
+        logger.warning("Window %s degraded to original fallback: %s",
+                       window.window_id, window.degradation_reason)
+
+    for window in valid_windows:
         primary_atom = window.atoms[0] if window.atoms else None
         items.append(TimelinePlanItem(
             shot_id=window.window_id,
@@ -51,9 +58,9 @@ def finalize_timeline_plan(
             degradation_reason=window.degradation_reason,
         ))
 
-    # Step 2: Carve modified ranges out of [0, video_duration]
+    # Step 2: Carve valid windows only (fallback windows keep original content)
     original_segments = [(0.0, video_duration)]
-    for window in windows:
+    for window in valid_windows:
         original_segments = _carve_out(original_segments, window.start_sec, window.end_sec)
 
     for seg_start, seg_end in original_segments:

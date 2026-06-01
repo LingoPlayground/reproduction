@@ -88,3 +88,14 @@ class TestFinalizeTimelinePlan:
         plan = finalize_timeline_plan(windows=[], shots=shots, video_duration=5.0, title="T", level="B2")
         assert len(plan.items) == 1
         assert plan.items[0].source == "original"
+
+    def test_unmatched_window_becomes_original(self):
+        window = GenerationWindow(
+            window_id="W1", start_sec=2.0, end_sec=6.0, atoms=[],
+            degradation_level=5, degradation_reason="unmatched_atom",
+        )
+        shots = [FakeShot(1, 0.0, 10.0, "scene")]
+        plan = finalize_timeline_plan(windows=[window], shots=shots, video_duration=10.0, title="T", level="B2")
+        modified = [i for i in plan.items if i.source == "modified"]
+        assert len(modified) == 0
+        assert all(i.source == "original" for i in plan.items)
