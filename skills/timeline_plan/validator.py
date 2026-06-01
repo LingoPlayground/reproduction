@@ -13,24 +13,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
-# ── Module-level env loading ────────────────────────────────────────
-
-def _load_env():
-    for env_path in [
-        str(Path("~/workspace/lingolens/backend/.env").expanduser()),
-        str(Path("~/workspace/shakespeare/.env").expanduser()),
-    ]:
-        if Path(env_path).exists():
-            with open(env_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        os.environ.setdefault(k.strip(), v.strip())
-
-_load_env()
-
-
 # ── Style anchors ────────────────────────────────────────────────────
 
 _STYLE_ANCHORS_CN = [
@@ -74,7 +56,7 @@ def validate_timeline_item(item: Any) -> List[str]:
     errors = []
     if not getattr(item, "shot_id", ""):
         errors.append(f"Item has empty shot_id")
-    if getattr(item, "source", "") not in ("seedance", "original"):
+    if getattr(item, "source", "") not in ("modified", "original"):
         errors.append(f"Item {getattr(item, 'shot_id', '?')}: invalid source '{getattr(item, 'source', '')}'")
     start = getattr(item, "start_sec", -1)
     end = getattr(item, "end_sec", -1)
@@ -82,10 +64,10 @@ def validate_timeline_item(item: Any) -> List[str]:
         errors.append(f"Item {getattr(item, 'shot_id', '?')}: missing start_sec or end_sec")
     elif start >= end:
         errors.append(f"Item {getattr(item, 'shot_id', '?')}: start_sec ({start}) >= end_sec ({end})")
-    if getattr(item, "source", "") == "seedance":
+    if getattr(item, "source", "") == "modified":
         prompt = getattr(item, "rewritten_prompt", None)
         if not prompt or not prompt.strip():
-            errors.append(f"Item {getattr(item, 'shot_id', '?')}: seedance item has empty rewritten_prompt")
+            errors.append(f"Item {getattr(item, 'shot_id', '?')}: modified item has empty rewritten_prompt")
     return errors
 
 

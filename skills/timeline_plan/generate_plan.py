@@ -1,358 +1,28 @@
 #!/usr/bin/env python3
-"""Stage 3: Timeline plan generator — orchestrates cut fusion, line-to-node matching, prompt extraction.
+"""Stage 3: Timeline plan generator — LLM-first pipeline.
 
-v2.1: Lines are matched to canvas nodes by extracting quoted dialogue from prompts.
-One shot's lines may map to multiple nodes.  Rewritten lines within the same node
-are grouped together for prompt extraction.
+v3.0: Evidence Builder → LLM Planner (single-pass) → Verifier →
+Timeline Normalizer (pure geometry). LLM handles all semantics.
+Deterministic code handles only validation and geometry.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from dataclasses import asdict
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 from skills.timeline_plan.models import (
-    TimelinePlan, TimelinePlanItem, CanvasNode, CutPoint, KeyFrame, Stage3Input,
-    normalize_seedance_duration, MIN_SEEDANCE_DURATION,
+    TimelinePlan, TimelinePlanItem, CanvasNode, CutPoint, Stage3Input,
 )
 from skills.timeline_plan.cut_fusion import determine_cut_points
-from skills.timeline_plan.canvas_matcher import match_lines_to_nodes, segment_node_prompts
-from skills.timeline_plan.prompt_composer import compose_prompt_patch
-from skills.timeline_plan.duration_resolver import resolve_duration
+from skills.timeline_plan.evidence_builder import build_evidence
+from skills.timeline_plan.llm_planner import generate_plan_draft
+from skills.timeline_plan.timeline_normalizer import normalize_plan
 from skills.timeline_plan.validator import validate_timeline_item, validate_timeline_items
-from skills.timeline_plan.evidence_builder import build_evidence_pack
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-def _shot_needs_rewrite(shot: Any, rewrite_lines: List[Dict]) -> Tuple[bool, List[Dict]]:
-    """Check which lines in a shot have rewritten dialogue."""
-    shot_line_ids = {str(getattr(line, "line_id", "")) for line in (shot.lines or [])}
-    matching = []
-    has_change = False
-    for rl in rewrite_lines:
-        lid = str(rl.get("line_id", ""))
-        if lid in shot_line_ids:
-            matching.append(rl)
-            if str(rl.get("original", "")) != str(rl.get("rewritten", "")):
-                has_change = True
-    return has_change, matching
-
-
-def _collect_ref_images(matched_node: Optional[CanvasNode], keyframes: List[KeyFrame], shot_number: int) -> List[str]:
-    if matched_node and matched_node.reference_images:
-        return list(matched_node.reference_images)
-    shot_kfs = [kf.image_path for kf in keyframes if kf.shot_number == shot_number]
-    return shot_kfs if shot_kfs else []
-
-
-def _fuzzy_word_match(original: str, prompt: str, threshold: float = 0.6) -> bool:
-    import re
-    words = [w.lower() for w in original.split() if len(w) >= 2]
-    if not words:
-        return False
-    prompt_lower = prompt.lower()
-    matched = sum(1 for w in words if re.search(r'\b' + re.escape(w) + r'\b', prompt_lower))
-    return matched / len(words) >= threshold
-
-
-def _classify_operation_type(node_prompt: str, rewrite_lines: List[Dict]) -> str:
-    if not node_prompt:
-        return "full_fallback"
-    any_literal = False
-    any_fuzzy = False
-    for rl in rewrite_lines:
-        original = rl.get("original", "").strip()
-        rewritten = rl.get("rewritten", "").strip()
-        if not original or not rewritten or original == rewritten:
-            continue
-        if original in node_prompt:
-            any_literal = True
-        elif _fuzzy_word_match(original, node_prompt):
-            any_fuzzy = True
-    if any_literal:
-        return "literal_replace"
-    if any_fuzzy:
-        return "fuzzy_replace"
-    return "semantic_insert"
-
-
-def _extend_short_group(
-    group: List[Dict],
-    node_line_ids: set,
-    all_lines_map: Dict[str, Dict],
-    line_to_node: Dict[str, str],
-) -> List[Dict]:
-    """Extend a short group (< 4s) by including nearby lines from the same node.
-    
-    Searches forward and backward in time for lines in the same node
-    (including non-rewritten ones) until the total duration reaches 4s.
-    Returns the extended group as rewrite-compatible dicts.
-    """
-    min_start = min(rl.get("start_seconds", 0.0) for rl in group)
-    max_end = max(rl.get("end_seconds", 0.0) for rl in group)
-    group_ids = {rl["line_id"] for rl in group}
-    
-    target_node = line_to_node.get(list(group_ids)[0]) if group_ids else None
-    candidates = []
-    for lid, info in all_lines_map.items():
-        if lid not in group_ids and line_to_node.get(lid) == target_node:
-            candidates.append(info)
-    candidates.sort(key=lambda l: l['start_seconds'])
-    
-    # Extend forward
-    for c in candidates:
-        if max_end - min_start >= MIN_SEEDANCE_DURATION:
-            break
-        if c['start_seconds'] >= max_end:
-            group.append({
-                'line_id': c['line_id'], 'speaker': c['speaker'],
-                'original': c['dialogue'], 'rewritten': c['dialogue'],
-                'start_seconds': c['start_seconds'], 'end_seconds': c['end_seconds'],
-                'shot_number': 0,
-            })
-            max_end = c['end_seconds']
-    
-    # Extend backward
-    for c in reversed(candidates):
-        if max_end - min_start >= MIN_SEEDANCE_DURATION:
-            break
-        if c['end_seconds'] <= min_start:
-            group.insert(0, {
-                'line_id': c['line_id'], 'speaker': c['speaker'],
-                'original': c['dialogue'], 'rewritten': c['dialogue'],
-                'start_seconds': c['start_seconds'], 'end_seconds': c['end_seconds'],
-                'shot_number': 0,
-            })
-            min_start = c['start_seconds']
-    
-    return group
-
-
-def _split_contiguous(rewrite_lines: List[Dict], max_gap_sec: float = 5.0) -> List[List[Dict]]:
-    """Split rewrite lines into contiguous groups, then merge-up groups < MIN_SEEDANCE_DURATION.
-    
-    After splitting by time gap, any group shorter than MIN_SEEDANCE_DURATION
-    merges into its nearest neighbor. Isolated short groups (no neighbor) 
-    are left as-is for the caller to handle as original segments.
-    """
-    if not rewrite_lines:
-        return []
-    
-    # Step 1: Split by time gap
-    groups = []
-    current = [rewrite_lines[0]]
-    for rl in rewrite_lines[1:]:
-        prev_end = current[-1].get("end_seconds", 0.0)
-        curr_start = rl.get("start_seconds", 0.0)
-        if curr_start - prev_end > max_gap_sec:
-            groups.append(current)
-            current = [rl]
-        else:
-            current.append(rl)
-    groups.append(current)
-    
-    # Step 2: Merge-up short groups (only if gap to neighbor ≤ max_gap_sec)
-    merged = []
-    i = 0
-    while i < len(groups):
-        group = groups[i]
-        dur = max(r.get("end_seconds", 0) for r in group) - min(r.get("start_seconds", 0) for r in group)
-        
-        if dur >= MIN_SEEDANCE_DURATION:
-            merged.append(group)
-            i += 1
-            continue
-        
-        # Check gap to neighbors before merging
-        gap_forward = float('inf')
-        if i + 1 < len(groups):
-            my_end = max(r.get("end_seconds", 0) for r in group)
-            next_start = min(r.get("start_seconds", 0) for r in groups[i + 1])
-            gap_forward = next_start - my_end
-        
-        gap_backward = float('inf')
-        if merged:
-            prev_end = max(r.get("end_seconds", 0) for r in merged[-1])
-            my_start = min(r.get("start_seconds", 0) for r in group)
-            gap_backward = my_start - prev_end
-        
-        if gap_forward <= max_gap_sec:
-            groups[i + 1] = group + groups[i + 1]
-            i += 1
-        elif gap_backward <= max_gap_sec:
-            merged[-1].extend(group)
-            i += 1
-        else:
-            merged.append(group)
-            i += 1
-    
-    return merged
-
-
-def _make_rl_objects(rewrite_lines: List[Dict]) -> List[SimpleNamespace]:
-    """Convert rewrite line dicts to SimpleNamespace, adding dialogue=original
-    so match_lines_to_nodes can use getattr(line, 'dialogue', '')."""
-    result = []
-    for rl in rewrite_lines:
-        rl_obj = SimpleNamespace(**rl)
-        if not getattr(rl_obj, "dialogue", None):
-            setattr(rl_obj, "dialogue", rl.get("original", ""))
-        result.append(rl_obj)
-    return result
-
-
-def _finalize_timeline(items, video_duration, min_original=0.5):
-    """Post-process timeline into non-overlapping sequence.
-
-    Principles:
-    1. Seedance items keep ASR-aligned positions (no start snapping).
-    2. Each seedance clamped to 4-10s: pad short, split long into equal segments.
-    3. Original items fill gaps between seedance, then merge adjacent originals.
-    """
-    MAX_SEEDANCE = 10.0
-
-    # Step 1: Carve seedance ranges out of original items
-    seedance_items = [i for i in items if i.source == "seedance"]
-    result = []
-    for item in items:
-        if item.source != "original":
-            result.append(item)
-            continue
-        segments = [(item.start_sec, item.end_sec)]
-        for si in seedance_items:
-            segments = _carve_out(segments, si.start_sec, si.end_sec)
-        for seg_start, seg_end in segments:
-            if seg_end - seg_start > 0.1:
-                result.append(TimelinePlanItem(
-                    shot_id=f"{item.shot_id}_seg", shot_number=item.shot_number,
-                    source="original", start_sec=seg_start, end_sec=seg_end,
-                    scene_description=item.scene_description,
-                    original_duration=seg_end - seg_start,
-                ))
-
-    # Step 2: Clamp each seedance to 4-10s, split if > MAX_SEEDANCE
-    result2 = []
-    for item in result:
-        if item.source == "seedance":
-            dur = item.end_sec - item.start_sec
-            if dur < 4.0:
-                item.end_sec = item.start_sec + 4.0
-            elif dur > MAX_SEEDANCE:
-                covered = item.covered_line_ids
-                num_segs = max(2, round(dur / MAX_SEEDANCE))
-                seg_dur = dur / num_segs
-                for k in range(num_segs):
-                    s_start = round(item.start_sec + k * seg_dur, 1)
-                    s_end = round(item.start_sec + (k + 1) * seg_dur, 1)
-                    result2.append(TimelinePlanItem(
-                        shot_id=f"{item.shot_id}_p{k}", shot_number=item.shot_number,
-                        source="seedance",
-                        start_sec=s_start, end_sec=s_end,
-                        scene_description=item.scene_description,
-                        ref_images=item.ref_images,
-                        rewritten_prompt=item.rewritten_prompt,
-                        matched_node_id=item.matched_node_id,
-                        match_confidence=item.match_confidence,
-                        degradation_level=item.degradation_level,
-                        seedance_duration=item.seedance_duration,
-                        original_duration=s_end - s_start,
-                        operation_type=item.operation_type,
-                        duration_strategy=item.duration_strategy,
-                        covered_line_ids=covered,
-                    ))
-                continue
-        result2.append(item)
-    result = result2
-
-    # Step 3: Sort, swallow micro originals, merge adjacent originals, fill gaps
-    result.sort(key=lambda i: i.start_sec)
-
-    i = 0
-    while i < len(result):
-        item = result[i]
-        if item.source != "original" or item.duration_sec >= min_original:
-            i += 1
-            continue
-        prev_seed = result[i - 1] if i > 0 and result[i - 1].source == "seedance" else None
-        next_seed = result[i + 1] if i + 1 < len(result) and result[i + 1].source == "seedance" else None
-        if prev_seed and prev_seed.matched_node_id:
-            prev_seed.end_sec = max(prev_seed.end_sec, item.end_sec)
-        elif next_seed and next_seed.matched_node_id:
-            next_seed.start_sec = min(next_seed.start_sec, item.start_sec)
-        result.pop(i)
-
-    merged = []
-    last_end = 0.0
-    for item in result:
-        if item.start_sec > last_end + 0.1:
-            merged.append(TimelinePlanItem(shot_id=f"gap_{last_end:.0f}", shot_number=0,
-                source="original", start_sec=last_end, end_sec=item.start_sec,
-                scene_description="", original_duration=item.start_sec - last_end))
-        if item.source == "original" and merged and merged[-1].source == "original":
-            merged[-1].end_sec = item.end_sec
-        else:
-            merged.append(item)
-        last_end = max(last_end, item.end_sec)
-    if last_end < video_duration - 0.1:
-        merged.append(TimelinePlanItem(shot_id=f"gap_{last_end:.0f}", shot_number=0,
-            source="original", start_sec=last_end, end_sec=video_duration,
-            scene_description="", original_duration=video_duration - last_end))
-
-    return merged
-
-
-def _carve_out(segments, carve_start, carve_end):
-    """Remove [carve_start, carve_end] from list of time segments."""
-    result = []
-    for seg_start, seg_end in segments:
-        if carve_start >= seg_end or carve_end <= seg_start:
-            result.append((seg_start, seg_end))
-        else:
-            if seg_start < carve_start:
-                result.append((seg_start, carve_start))
-            if seg_end > carve_end:
-                result.append((carve_end, seg_end))
-    return result
-
-
-def _snap_boundaries(start: float, end: float, cut_points: List[CutPoint], snap_window: float = 0.8, audio_padding: float = 0.15) -> Tuple[float, float]:
-    """Snap ASR boundaries to nearest scene cut points for clean visual transitions.
-    
-    If the segment covers > 60% of the time between two consecutive cut points,
-    snap to those cut boundaries to replace the entire PySceneDetect shot.
-    Otherwise, snap individual boundaries within snap_window, or add audio_padding.
-    """
-    if not cut_points:
-        return max(0.0, start - audio_padding), end + audio_padding
-    
-    cut_times = sorted([c.time_sec for c in cut_points])
-    
-    # Check for shot-level replacement: > 60% coverage → snap to enclosing cuts
-    for i in range(len(cut_times) - 1):
-        shot_start, shot_end = cut_times[i], cut_times[i + 1]
-        if start >= shot_start and end <= shot_end:
-            coverage = (end - start) / max(shot_end - shot_start, 0.1)
-            if coverage > 0.6:
-                return shot_start, shot_end
-            break
-    
-    # Per-boundary snap
-    final_start = max(0.0, start - audio_padding)
-    final_end = end + audio_padding
-    
-    closest_start = min(cut_times, key=lambda x: abs(x - start))
-    if abs(closest_start - start) <= snap_window:
-        final_start = closest_start
-    
-    closest_end = min(cut_times, key=lambda x: abs(x - end))
-    if abs(closest_end - end) <= snap_window:
-        final_end = closest_end
-    
-    return max(0.0, final_start), final_end
 
 
 def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
@@ -361,257 +31,130 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
     rewrite_lines_all = input_data.rewrite_json.get("lines", [])
     canvas_nodes = input_data.canvas_nodes
     video_cuts = input_data.video_cut_points
-    keyframes = input_data.keyframes
     level = input_data.level
 
     video_duration = max(
         [s.end_seconds for s in shots if hasattr(s, 'end_seconds')],
         default=60.0,
     )
-    # Extend to cover all ASR timestamps (may exceed multimodal shot boundaries)
     max_asr_end = max(
         (rl.get("end_seconds", 0.0) for rl in rewrite_lines_all),
         default=0.0,
     )
     video_duration = max(video_duration, max_asr_end)
+    title = getattr(script_output, "title", "Untitled") if script_output else "Untitled"
 
-    # Diagnose script-vs-ASR timing offset (Multimodal LLM boundaries may be unreliable)
     for shot in shots:
         sn = getattr(shot, "shot_number", 0)
-        shot_start = getattr(shot, "start_seconds", 0.0)
-        shot_end = getattr(shot, "end_seconds", 0.0)
         asr_starts = [rl.get("start_seconds", 0.0) for rl in rewrite_lines_all
-                      if rl.get("shot_number") == sn and rl.get("start_seconds", 0) > 0]
+                       if rl.get("shot_number") == sn and rl.get("start_seconds", 0) > 0]
         if asr_starts:
-            asr_min = min(asr_starts)
-            offset = abs(asr_min - shot_start)
+            offset = abs(min(asr_starts) - getattr(shot, "start_seconds", 0.0))
             if offset > 10:
-                logger.warning("Shot %d: script boundary [%.1f-%.1fs] vs ASR [%.1fs] — offset %.0fs (multimodal LLM boundaries may be unreliable, using ASR timestamps)",
-                              sn, shot_start, shot_end, asr_min, offset)
-    cut_boundaries = determine_cut_points(shots, video_cuts, video_duration)
+                logger.warning("Shot %d: script vs ASR offset %.0fs", sn, offset)
 
-    # ── Build helpers ──────────────────────────────────────────
-    # Map line_id → shot info (for time range lookup)
-    line_id_to_shot: Dict[str, Any] = {}
-    all_lines_map: Dict[str, Dict] = {}
-    for shot in shots:
-        for line in (shot.lines or []):
-            lid = str(getattr(line, 'line_id', ''))
-            line_id_to_shot[lid] = shot
-            all_lines_map[lid] = {
-                'line_id': lid,
-                'dialogue': getattr(line, 'dialogue', ''),
-                'speaker': getattr(line, 'speaker', ''),
-                'start_seconds': getattr(line, 'start_seconds', 0.0),
-                'end_seconds': getattr(line, 'end_seconds', 0.0),
-            }
+    # ── Stage 3A: Evidence ──
+    logger.info("Building evidence...")
+    evidence = build_evidence(shots, rewrite_lines_all, canvas_nodes, video_cuts, level)
+    logger.info("Evidence: %d rewrite lines, %d canvas nodes, %d shots with scene context",
+                len(evidence["rewrite_lines"]), len(evidence["canvas_nodes"]),
+                len(evidence["scene_context"]))
 
-    # Map node_id → CanvasNode
-    node_map: Dict[str, CanvasNode] = {n.node_id: n for n in canvas_nodes}
-
-    # ── Separate rewritten vs unchanged lines ──────────────────
-    rewritten_lines: List[Dict] = []
-    for rl in rewrite_lines_all:
-        if str(rl.get("original", "")) != str(rl.get("rewritten", "")):
-            rewritten_lines.append(rl)
-
-    # ── Match rewritten lines to nodes ─────────────────────────
-    line_confidences: Dict[str, float] = {}
-    if rewritten_lines and canvas_nodes:
-        rl_objects = _make_rl_objects(rewritten_lines)
-        node_line_groups, line_confidences = match_lines_to_nodes(rl_objects, canvas_nodes)
-        # node_line_groups: {node_id: [line_id, ...]}
-    else:
-        node_line_groups = {}
-
-    # ── v3: Section-level prompt analysis ──────────────────────
-    sections_by_node: Dict[str, List] = {}
-    if canvas_nodes:
-        sections_by_node = segment_node_prompts(canvas_nodes)
-
-    # ── Build reverse map: line_id → node_id ───────────────────
-    line_to_node: Dict[str, str] = {}
-    for node_id, lids in node_line_groups.items():
-        for lid in lids:
-            line_to_node[lid] = node_id
-
-    # ── Track which shots have been handled ────────────────────
-    items: List[TimelinePlanItem] = []
-    handled_rewrite_line_ids: set[str] = set()
-
-    # ── Per-node: create TimelinePlanItem for rewritten lines ──
-    for node_id, line_ids in node_line_groups.items():
-        node = node_map.get(node_id)
-        node_rewrite_lines = [
-            rl for rl in rewritten_lines
-            if rl["line_id"] in line_ids
-        ]
-        if not node_rewrite_lines:
-            continue
-
-        # Sort by start time and split into contiguous groups
-        node_rewrite_lines.sort(key=lambda rl: rl.get("start_seconds", 0.0))
-        contiguous_groups = _split_contiguous(node_rewrite_lines)
-
-        for group in contiguous_groups:
-            min_start = min(rl.get("start_seconds", 0.0) for rl in group)
-            max_end = max(rl.get("end_seconds", min_start + 1.0) for rl in group)
-            duration = max_end - min_start
-
-            if duration < MIN_SEEDANCE_DURATION:
-                # v3: resolve duration instead of silent drop
-                group, duration_strategy, new_duration = resolve_duration(
-                    group, all_lines_map, line_to_node, MIN_SEEDANCE_DURATION
-                )
-                min_start = min(rl.get("start_seconds", 0.0) for rl in group)
-                max_end = max(rl.get("end_seconds", min_start + 1.0) for rl in group)
-                duration = new_duration
-            else:
-                duration_strategy = "direct"
-
-            # Snap to scene cut points for clean visual transitions
-            min_start, max_end = _snap_boundaries(min_start, max_end, video_cuts)
-
-            first_shot = line_id_to_shot.get(group[0]["line_id"])
-            scene_desc = getattr(first_shot, "scene_description", "") if first_shot else ""
-            if not scene_desc.strip():
-                scene_desc = group[0].get("shot_scene", "")
-            shot_num = group[0].get("shot_number", 0)
-
-            degradation_level = 0
-            ref_images = _collect_ref_images(node, keyframes, shot_num)
-            if not ref_images:
-                degradation_level = 1
-
-            prompt_str = node.prompt if node else ""
-            rl_objects = _make_rl_objects(group)
-            operation_type = _classify_operation_type(prompt_str, group)
-            rewritten_prompt = compose_prompt_patch(
-                prompt_str, rl_objects, scene_desc, operation_type
-            )
-
-            seedance_dur = normalize_seedance_duration(duration)
-
-            group_ids = {rl["line_id"] for rl in group}
-            conf_values = [line_confidences.get(lid, 0.0) for lid in group_ids if lid in line_confidences]
-            node_confidence = sum(conf_values) / len(conf_values) if conf_values else None
-
+    # Quick path: no rewritten lines
+    if not evidence["rewrite_lines"]:
+        logger.info("No rewritten lines — all-original plan")
+        cut_boundaries = determine_cut_points(shots, video_cuts, video_duration)
+        items = []
+        for idx, shot in enumerate(shots):
+            start_s, end_s = cut_boundaries[idx]
             items.append(TimelinePlanItem(
-                shot_id=f"shot_{shot_num}_node_{node_id[:8]}" if node else f"shot_{shot_num}",
-                shot_number=shot_num,
-                source="seedance",
-                start_sec=min_start,
-                end_sec=max_end,
-                scene_description=scene_desc,
-                ref_images=ref_images,
-                rewritten_prompt=rewritten_prompt,
-                matched_node_id=node_id if node else None,
-                match_confidence=node_confidence,
-                degradation_level=degradation_level,
-                seedance_duration=seedance_dur,
-                original_duration=duration,
-                operation_type=operation_type,
-                duration_strategy=duration_strategy,
-                covered_line_ids=sorted(group_ids),
-                borrowed_line_ids=[],
-                source_node_ids=[node_id] if node_id else [],
-                degradation_reason=(
-                    "duration_padded_to_meet_min_4s" if duration_strategy != "direct"
-                    else ""
-                ),
+                shot_id=f"shot_{getattr(shot, 'shot_number', idx)}",
+                shot_number=getattr(shot, "shot_number", idx),
+                source="original",
+                start_sec=start_s, end_sec=end_s,
+                scene_description=getattr(shot, "scene_description", "") or "",
+                original_duration=end_s - start_s,
             ))
-            handled_rewrite_line_ids.update(group_ids)
+        items.sort(key=lambda i: i.start_sec)
+        return TimelinePlan(
+            title=title, level=level,
+            total_duration_sec=video_duration, items=items,
+            metadata={"num_shots": len(shots), "num_items": len(items),
+                       "num_modified": 0, "num_original": len(items)},
+        )
 
-    # ── Remaining shots: original (unchanged dialogue) ─────────
-    for idx, shot in enumerate(shots):
-        start_s, end_s = cut_boundaries[idx]
-        scene_desc = getattr(shot, "scene_description", "") or ""
+    # ── Stage 3B: LLM Planner (match + rewrite) ──
+    logger.info("Running LLM planner...")
+    try:
+        draft = generate_plan_draft(evidence, canvas_nodes=canvas_nodes)
+    except ValueError as e:
+        logger.error("LLM planner failed: %s", e)
+        raise
 
-        # Check if any of this shot's rewritten lines weren't handled
-        needs_rewrite, matching = _shot_needs_rewrite(shot, rewrite_lines_all)
-        shot_line_ids = {str(rl["line_id"]) for rl in matching}
+    logger.info("Planner: %d generations, %d unmatched",
+                len(draft.node_generations), len(draft.unmatched_lines))
 
-        if needs_rewrite:
-            if shot_line_ids - handled_rewrite_line_ids:
-                # This shot has unreplaced rewritten lines → degraded fallback
-                unmatched = [rl for rl in matching
-                             if rl["line_id"] not in handled_rewrite_line_ids
-                             and str(rl.get("original", "")) != str(rl.get("rewritten", ""))]
-                if not unmatched:
-                    continue
-                min_start = min(rl.get("start_seconds", start_s) for rl in unmatched)
-                max_end = max(rl.get("end_seconds", end_s) for rl in unmatched)
-                if max_end - min_start < MIN_SEEDANCE_DURATION:
-                    handled_rewrite_line_ids.update({rl["line_id"] for rl in unmatched})
-                    continue
-                min_start, max_end = _snap_boundaries(min_start, max_end, video_cuts)
-                rl_objects = _make_rl_objects(unmatched)
-                rewritten_prompt = compose_prompt_patch("", rl_objects, scene_desc, "full_fallback")
-                items.append(TimelinePlanItem(
-                    shot_id=f"shot_{shot.shot_number}_fallback",
-                    shot_number=shot.shot_number,
-                    source="seedance",
-                    start_sec=min_start, end_sec=max_end,
-                    scene_description=scene_desc,
-                    rewritten_prompt=rewritten_prompt,
-                    degradation_level=2,
-                    seedance_duration=normalize_seedance_duration(max_end - min_start),
-                    original_duration=max_end - min_start,
-                    operation_type="full_fallback",
-                    duration_strategy="direct",
-                    covered_line_ids=sorted({rl["line_id"] for rl in unmatched}),
-                    borrowed_line_ids=[],
-                    source_node_ids=[],
-                    degradation_reason="no_matching_canvas_node",
-                ))
-            continue
-
-        # Shot with NO rewritten lines → original segment
-        items.append(TimelinePlanItem(
-            shot_id=f"shot_{shot.shot_number}",
-            shot_number=shot.shot_number,
-            source="original",
-            start_sec=start_s, end_sec=end_s,
-            scene_description=scene_desc,
-            original_duration=end_s - start_s,
-        ))
-
-    items.sort(key=lambda i: i.start_sec)
-    items = _finalize_timeline(items, video_duration)
-
-    # L1/L2: validate timeline plan before serialization
-    validation_errors: List[str] = []
-    for item in items:
-        validation_errors.extend(validate_timeline_item(item))
-    validation_errors.extend(validate_timeline_items(items, video_duration))
-    if validation_errors:
-        logger.warning("Timeline plan validation: %d errors", len(validation_errors))
-        for err in validation_errors[:10]:
-            logger.warning("  %s", err)
-
-    return TimelinePlan(
-        title=getattr(script_output, "title", "Untitled") if script_output else "Untitled",
-        level=level,
-        total_duration_sec=video_duration,
-        items=items,
-        metadata={
-            "num_shots": len(shots),
-            "num_items": len(items),
-            "num_rewritten": sum(1 for i in items if i.source == "seedance"),
-            "num_original": sum(1 for i in items if i.source == "original"),
-            "node_groups": len(node_line_groups),
-        },
+    # ── Stage 3C: Normalizer ──
+    logger.info("Normalizing timeline...")
+    plan = normalize_plan(
+        draft=draft, script_shots=shots, canvas_nodes=canvas_nodes,
+        cut_points=video_cuts, video_duration=video_duration,
+        title=title, level=level,
     )
+
+    # ── Post-normalization coverage ──
+    # Only check that ALL rewritten lines are covered (neighbor lines are allowed extras)
+    all_rewrite_ids = {rl["line_id"] for rl in evidence["rewrite_lines"]}
+    final_covered: Dict[str, List[str]] = {}
+    for item in plan.items:
+        for lid in (item.covered_line_ids or []):
+            final_covered.setdefault(lid, []).append(item.shot_id)
+
+    missing = all_rewrite_ids - set(final_covered)
+    dups = {lid: shots for lid, shots in final_covered.items() if len(shots) > 1 and lid in all_rewrite_ids}
+
+    post_errors: List[str] = []
+    if missing:
+        post_errors.append(f"{len(missing)} lines missing: {sorted(missing)[:10]}")
+    if dups:
+        post_errors.append(f"{len(dups)} lines duplicated")
+    if post_errors:
+        raise ValueError("Post-normalization coverage FAILED:\n" + "\n".join(post_errors))
+
+    # ── Final validation ──
+    validation_errors: List[str] = []
+    for item in plan.items:
+        validation_errors.extend(validate_timeline_item(item))
+    validation_errors.extend(validate_timeline_items(plan.items, video_duration))
+
+    blocking = [
+        e for e in validation_errors
+        if any(kw in e.lower() for kw in (
+            "overlap", "start_sec (", "missing start_sec", ">= end_sec",
+            "empty rewritten_prompt", "covered by both",
+            "gap at start", "gap at end", "empty shot_id", "invalid source",
+        ))
+    ]
+    if blocking:
+        raise ValueError(
+            f"Validation FAILED with {len(blocking)} blocking errors:\n"
+            + "\n".join(f"  - {e}" for e in blocking)
+        )
+    if validation_errors:
+        logger.warning("%d non-blocking warnings", len(validation_errors))
+
+    return plan
 
 
 def main():
+    from skills.common.env import load_pipeline_env
+    load_pipeline_env()
     import argparse
     p = argparse.ArgumentParser(description="Stage 3: Generate timeline plan")
     p.add_argument("--script", required=True)
     p.add_argument("--rewrite", required=True)
     p.add_argument("--canvas")
     p.add_argument("--cuts")
-    p.add_argument("--keyframes")
     p.add_argument("--output", required=True)
     p.add_argument("--level", default="B2")
     args = p.parse_args()
@@ -636,10 +179,6 @@ def main():
     if args.cuts and Path(args.cuts).exists():
         with open(args.cuts) as f:
             cuts = [CutPoint(time_sec=c["time_sec"], confidence=c.get("confidence", 1.0)) for c in json.load(f)]
-    kfs: List[KeyFrame] = []
-    if args.keyframes and Path(args.keyframes).exists():
-        with open(args.keyframes) as f:
-            kfs = [KeyFrame(time_sec=k["time_sec"], image_path=k["image_path"], shot_number=k["shot_number"]) for k in json.load(f)]
 
     class _SW:
         class _S:
@@ -656,6 +195,7 @@ def main():
             def __init__(s, d):
                 s.line_id = d.get("line_id", "")
                 s.dialogue = d.get("dialogue", "")
+                s.speaker = d.get("speaker", "")
                 s.start_seconds = d.get("start_seconds", 0.0)
                 s.end_seconds = d.get("end_seconds", 0.0)
         def __init__(s, d):
@@ -664,7 +204,7 @@ def main():
 
     inp = Stage3Input(
         script_output=_SW(script_data) if script_data else None,
-        video_cut_points=cuts, keyframes=kfs,
+        video_cut_points=cuts,
         rewrite_json=rewrite_data, canvas_nodes=canvas_nodes, level=args.level,
     )
     plan = generate_timeline_plan(inp)
@@ -677,6 +217,7 @@ def main():
         deg = f" (L{item.degradation_level})" if item.degradation_level > 0 else ""
         node_info = f" node={item.matched_node_id[:12]}..." if item.matched_node_id else ""
         print(f"  [{item.source}] Shot {item.shot_number}: {item.start_sec:.1f}s-{item.end_sec:.1f}s{deg}{node_info}")
+
 
 if __name__ == "__main__":
     main()

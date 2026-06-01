@@ -1,89 +1,108 @@
-"""Evidence Pack builder: constructs structured evidence packages for the EditPlanner.
+"""Evidence Builder: packages all inputs for LLM consumption.
 
-Takes the data already assembled in generate_plan.py (rewrite lines, canvas node,
-keyframes, scene cuts) and packages it into a typed EvidencePack for LLM consumption.
+Constructs the unified evidence dict. Does NOT extract dialogue from
+node prompts — the LLM planner receives complete prompts and identifies
+dialogue itself.
+
+Key insight from rewrite JSON: each line already has `shot_scene` with
+rich scene descriptions (from Stage 1 multimodal extraction). These are
+far better video context than keyframe paths (which the LLM can't see).
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List
 
-from skills.timeline_plan.models import (
-    CanvasNode,
-    CanvasNodeEvidence,
-    Constraints,
-    EvidencePack,
-    KeyFrame,
-    CutPoint,
-    LineEvidence,
-    NodeSection,
-    VideoEvidence,
-)
+import re
 
 
-def build_evidence_pack(
-    group_id: str,
-    rewrite_lines: List[Dict],
-    all_lines_map: Dict[str, Dict],
-    node: Optional[CanvasNode],
-    node_sections: Optional[List[NodeSection]] = None,
-    matched_section_id: Optional[str] = None,
-    keyframes: Optional[List[KeyFrame]] = None,
-    scene_cuts: Optional[List[CutPoint]] = None,
-) -> EvidencePack:
-    group_line_ids = {rl["line_id"] for rl in rewrite_lines}
+def _normalize_text(text: str) -> str:
+    text = text.strip().lower()
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[^\w\s]', '', text)
+    return text
 
-    target_lines = []
-    for rl in rewrite_lines:
-        target_lines.append(LineEvidence(
-            line_id=rl["line_id"],
-            speaker=rl.get("speaker", ""),
-            original=rl.get("original", ""),
-            rewritten=rl.get("rewritten", ""),
-            start_seconds=rl.get("start_seconds", 0.0),
-            end_seconds=rl.get("end_seconds", 0.0),
-            shot_number=rl.get("shot_number", 0),
-            shot_scene=rl.get("shot_scene", ""),
-            rewrite_status="rewritten",
-        ))
 
-    neighbor_lines = []
-    for lid, info in all_lines_map.items():
-        if lid not in group_line_ids:
-            neighbor_lines.append(LineEvidence(
-                line_id=lid,
-                speaker=info.get("speaker", ""),
-                original=info.get("dialogue", ""),
-                rewritten=info.get("dialogue", ""),
-                start_seconds=info.get("start_seconds", 0.0),
-                end_seconds=info.get("end_seconds", 0.0),
-                shot_number=0,
-                shot_scene="",
-                rewrite_status="unchanged",
-            ))
+def build_evidence(
+    script_shots: List[Any],
+    rewrite_lines_all: List[Dict],
+    canvas_nodes: List[Any],
+    cut_points: List[Any],
+    level: str = "B2",
+) -> Dict[str, Any]:
+    """Build the unified evidence dict for LLM consumption.
 
-    canvas_evidence = None
-    if node:
-        canvas_evidence = CanvasNodeEvidence(
-            node_id=node.node_id,
-            name=getattr(node, "name", ""),
-            full_prompt=node.prompt,
-            sections=node_sections or [],
-            reference_images=node.reference_images,
-        )
+    Returns:
+        Dict with:
+        {
+            "rewrite_lines": [...],     # lines where original != rewritten
+            "neighbor_lines": [...],    # nearby unchanged lines for context
+            "canvas_nodes": [...],      # complete node prompts + metadata
+            "scene_context": {...},     # shot-level scene descriptions
+            "timeline": {...},          # scene cuts, video duration
+            "constraints": {...}        # hard constraints
+        }
+    """
+    rewritten_lines: List[Dict] = []
+    unchanged_lines: List[Dict] = []
+    for rl in rewrite_lines_all:
+        entry = {
+            "line_id": str(rl.get("line_id", "")),
+            "original": str(rl.get("original", "")),
+            "rewritten": str(rl.get("rewritten", "")),
+            "speaker": str(rl.get("speaker", "")),
+            "start_sec": float(rl.get("start_seconds", 0.0)),
+            "end_sec": float(rl.get("end_seconds", 0.0)),
+            "shot_number": int(rl.get("shot_number", 0)),
+            "shot_scene": str(rl.get("shot_scene", "")),
+        }
+        is_rewritten = _normalize_text(entry["original"]) != _normalize_text(entry["rewritten"])
+        if is_rewritten:
+            rewritten_lines.append(entry)
+        else:
+            unchanged_lines.append(entry)
 
-    video_evidence = None
-    if keyframes or scene_cuts:
-        video_evidence = VideoEvidence(
-            keyframe_paths=[kf.image_path for kf in (keyframes or [])],
-            scene_cuts=[c.time_sec for c in (scene_cuts or [])],
-        )
+    nodes = []
+    for node in canvas_nodes:
+        prompt = getattr(node, "prompt", "") or ""
+        if len(prompt) > 800:
+            prompt = prompt[:800] + "..."
+        nodes.append({
+            "node_id": getattr(node, "node_id", ""),
+            "prompt": prompt,
+        })
 
-    return EvidencePack(
-        group_id=group_id,
-        target_lines=target_lines,
-        neighbor_lines=neighbor_lines,
-        canvas_node=canvas_evidence,
-        matched_section_id=matched_section_id,
-        video=video_evidence,
-        constraints=Constraints(),
+    # Build scene-level context from shot_scene descriptions
+    # Each unique shot_scene description is already rich text from
+    # Stage 1 multimodal extraction
+    scene_map: Dict[int, str] = {}
+    for rl in rewrite_lines_all:
+        scene = str(rl.get("shot_scene", ""))
+        sn = int(rl.get("shot_number", 0))
+        if scene and sn not in scene_map:
+            scene_map[sn] = scene
+    scene_context = [
+        {"shot_number": sn, "description": desc}
+        for sn, desc in sorted(scene_map.items())
+    ]
+
+    video_duration = max(
+        (rl.get("end_seconds", 0.0) for rl in rewrite_lines_all),
+        default=60.0,
     )
+
+    return {
+        "rewrite_lines": rewritten_lines,
+        "neighbor_lines": unchanged_lines[:50],
+        "canvas_nodes": nodes,
+        "scene_context": scene_context,
+        "timeline": {
+            "scene_cuts": [getattr(c, "time_sec", 0.0) for c in cut_points] if cut_points else [],
+            "video_duration_sec": video_duration,
+        },
+        "constraints": {
+            "must_cover_every_rewritten_line": True,
+            "must_not_duplicate_lines": True,
+            "must_preserve_environment_action_style": True,
+            "min_modified_duration_sec": 4.0,
+        },
+    }

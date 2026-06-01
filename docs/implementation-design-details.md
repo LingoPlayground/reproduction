@@ -24,19 +24,19 @@
    - [6.2 Original 片段 → ffmpeg 原样切](#62-original-片段--ffmpeg-原样切)
    - [6.3 Modified 片段 → Seedance 生成](#63-modified-片段--seedance-生成)
    - [6.4 拼接与完整性检查](#64-拼接与完整性检查)
-7. [两套架构并存：LLM-first 主路径 vs 旧 Matcher/Composer](#7-两套架构并存llm-first-主路径-vs-旧-matchercomposer)
+7. [旧 Matcher/Composer 路径（已删除，仅历史参考）](#7-旧-matchercomposer-路径已删除仅历史参考)
    - [7.1 主路径：llm_planner.py](#71-主路径llm_plannerpy)
-   - [7.2 旧路径并存：canvas_matcher.py + edit_planner.py + prompt_composer.py](#72-旧路径并存canvas_matcherpy--edit_plannerpy--prompt_composerpy)
+   - [7.2 旧路径：canvas_matcher.py + edit_planner.py + prompt_composer.py（已删除）](#72-旧路径canvas_matcherpy--edit_plannerpy--prompt_composerpy已删除)
 8. [设计文档中的 v3 理想方案 vs 当前实现](#8-设计文档中的-v3-理想方案-vs-当前实现)
 9. [数据模型全览](#9-数据模型全览)
 10. [已识别风险与设计问题](#10-已识别风险与设计问题)
     - [P0：没有确定性验证 "只改台词，不改环境/动作"](#p0没有确定性验证-只改台词不改环境动作)
     - [P1：短片段扩展策略过于机械](#p1短片段扩展策略过于机械)
     - [P1：Seedance Fallback 可能导致改写台词静默消失](#p1seedance-fallback-可能导致改写台词静默消失)
-    - [P1：主路径与旧路径并存，维护复杂度高](#p1主路径与旧路径并存维护复杂度高)
+     - [P1：主路径与旧路径并存，维护复杂度高（已部分解决）](#p1主路径与旧路径并存维护复杂度高已部分解决)
     - [P2：Keyframes 未真正进入多模态匹配](#p2keyframes-未真正进入多模态匹配)
     - [P2：Unmatched Line 直接 Fail，缺少优雅降级](#p2unmatched-line-直接-fail缺少优雅降级)
-    - [P2：Duration Resolver 独立文件未接入主路径](#p2duration-resolver-独立文件未接入主路径)
+     - [P2：Duration Resolver 策略未迁移（文件已删除）](#p2duration-resolver-策略未迁移文件已删除)
 11. [相关文件清单](#11-相关文件清单)
 
 ---
@@ -549,9 +549,9 @@ if abs(drift) > 2.0:
 
 ---
 
-## 7. 两套架构并存：LLM-First 主路径 vs 旧 Matcher/Composer
+## 7. 旧 Matcher/Composer 路径（已删除，仅历史参考）
 
-这是当前项目一个重要但未明确说明的现状：**同一个 skills/timeline_plan/ 下存在两条可用的画布匹配 + Prompt 改写路径**。
+> **⚠️ 文档更新（2026-05-31）**：旧路径文件（`canvas_matcher.py`、`edit_planner.py`、`prompt_composer.py`、`prompt_extractor.py`、`duration_resolver.py`）已从工作树中删除，不再与主路径并存。但旧路径中包含的部分能力尚未迁移到主路径，见下方说明。
 
 ### 7.1 主路径：llm_planner.py
 
@@ -579,15 +579,17 @@ from skills.timeline_plan.timeline_normalizer import normalize_plan
 **优点**：简洁、上下文集中、一次决策避免多步传递错误。  
 **风险**：语义决策完全由 LLM 负责，'只改台词'等关键要求缺乏确定性校验。
 
-### 7.2 旧路径并存：canvas_matcher.py + edit_planner.py + prompt_composer.py
+### 7.2 旧路径：canvas_matcher.py + edit_planner.py + prompt_composer.py（已删除）
 
-| 文件 | 职责 | 被主路径调用？ |
+以下文件曾在 `skills/timeline_plan/` 下存在、可导入、被测试引用，但从未被主路径 `generate_plan.py` 调用。**当前已从工作树中删除**，仅在 git 历史中保留：
+
+| 文件 | 职责 | 状态 |
 |------|------|:----:|
-| `canvas_matcher.py` | 多次 LLM run + shuffle + voting 做 line-to-node matching | **否** |
-| `edit_planner.py` | 判断 operation_type（literal_replace / semantic_insert 等） | **否** |
-| `prompt_composer.py` | 分层 prompt 编辑 + L3/L4 校验 + style preservation fallback | **否** |
-| `prompt_extractor.py` | 旧版 prompt 重写（只支持 literal_replace） | **否** |
-| `duration_resolver.py` | 短组扩展策略（pad_after/before/forced） | **否** |
+| `canvas_matcher.py` | 多次 LLM run + shuffle + voting 做 line-to-node matching | 已删除 |
+| `edit_planner.py` | 判断 operation_type（literal_replace / semantic_insert 等） | 已删除 |
+| `prompt_composer.py` | 分层 prompt 编辑 + L3/L4 校验 + style preservation fallback | 已删除 |
+| `prompt_extractor.py` | 旧版 prompt 重写（只支持 literal_replace） | 已删除 |
+| `duration_resolver.py` | 短组扩展策略（pad_after/before/forced） | 已删除 |
 
 #### canvas_matcher.py 的匹配算法
 
@@ -616,7 +618,11 @@ from skills.timeline_plan.timeline_normalizer import normalize_plan
 | style preserving fallback | 以上都失败但还有 style layer | 保留 style prefix + scene + dialogue |
 | full fallback | 无可用 node | 纯 scene_description 生成 |
 
-**当前状态**：这些文件代码完整、可导入，但 `generate_plan.py` 的主路径不使用它们。`prompt_composer.py` 的 L3/L4 校验和 fallback 机制其实比主路径更完善，但未被集成。
+**当前状态**：这些文件已从工作树中删除。"两套架构并存"的维护负担已消除，但旧路径中以下能力**尚未迁移到主路径**，属于功能缺口：
+
+1. **`prompt_composer.py` 的 style-preserving fallback**：在主路径的 prompt rewriting 失败时，旧路径有分层 fallback（保留 style prefix + scene + dialogue）作为兜底，当前主路径缺少这一安全网；
+2. **`duration_resolver.py` 的 pad_before/pad_after 策略**：旧路径支持按语义判断向前/向后扩展短片段（避免盲目后移导致内容重叠），主路径当前仅做 `end_sec = start_sec + 4.0` 的简单后移；
+3. **`canvas_matcher.py` 的多轮 voting 匹配思想**：通过多次 LLM run + shuffle（防位置偏差）+ cross-run majority vote 增强匹配置信度，主路径仅做一次 LLM 调用完成匹配，缺少多轮交叉验证。
 
 ---
 
@@ -894,19 +900,19 @@ if actual > 0 and actual < planned_duration - 0.5:
 
 ---
 
-### P1：主路径与旧路径并存，维护复杂度高
+### P1：主路径与旧路径并存，维护复杂度高（已部分解决）
 
-当前仓库 `skills/timeline_plan/` 下共存：
+> **⚠️ 更新**：旧路径文件已从工作树中删除，两条路径的代码级并存问题已消除。但旧路径中的 `canvas_matcher.py` 对 `models.NodeSection` 的 import 在旧 models 中已不存在——即便文件恢复也无法直接导入，代码已腐化。
+
+当前仓库 `skills/timeline_plan/` 下保留的文件：
 
 | 路径 | 文件 | 被主 `generate_plan.py` 调用？ |
 |------|------|:---:|
 | ✅ 主路径 | `evidence_builder.py`, `llm_planner.py`, `planner_verifier.py`, `timeline_normalizer.py`, `validator.py` | 是 |
 | ⚠️ 半集成 | `cut_fusion.py` | 是（被 `timeline_normalizer` 调用） |
-| ❌ 未集成 | `canvas_matcher.py`, `edit_planner.py`, `prompt_composer.py`, `prompt_extractor.py`, `duration_resolver.py` | 否 |
+| ❌ 已删除 | `canvas_matcher.py`, `edit_planner.py`, `prompt_composer.py`, `prompt_extractor.py`, `duration_resolver.py` | 历史存在，现已删除 |
 
-这些未集成的文件代码完整、有 import 链路、甚至被测试引用。`canvas_matcher.py` 中的 `segment_node_prompts()` 函数存在对 `models.NodeSection` 的 import，但当前 `models.py` 中没有 `NodeSection` 定义——如果调用会 ImportError。
-
-**建议**：明确要么集成、要么标记 deprecated、要么移除。保持两种路径并存且状态不明确的负担高。
+删除后引入的新缺口：旧路径中更细致的策略（style-preserving fallback、pad_before/pad_after、多轮 voting 匹配）未迁移到主路径。详见 [§7.2](#72-旧路径canvas_matcherpy--edit_plannerpy--prompt_composerpy已删除)。
 
 ---
 
@@ -939,7 +945,7 @@ if draft.unmatched_lines:
 
 ---
 
-### P2：Duration Resolver 独立文件未接入主路径
+### P2：Duration Resolver 策略未迁移（文件已删除）
 
 `duration_resolver.py` 有 3 种 pad 策略：
 
@@ -949,14 +955,14 @@ def pad_before(all_lines_map, line_to_node, rewrite_lines, ...) -> (start_sec, e
 def forced_min_duration(all_lines_map, line_to_node, rewrite_lines, ...) -> (start_sec, end_sec, strategy):
 ```
 
-但当前主路径里 `timeline_normalizer.py` 直接：
+但该文件已随旧路径一同删除。当前主路径里 `timeline_normalizer.py` 直接：
 
 ```python
 if duration < MIN_MODIFIED_DURATION:
     end_sec = start_sec + MIN_MODIFIED_DURATION
 ```
 
-没有调用这些策略。且 `duration_resolver.py` 的 `all_lines_map` 和 `line_to_node` 参数接收后从未被使用。
+没有语义化的 pad_before/pad_after 策略。且旧 `duration_resolver.py` 的 `all_lines_map` 和 `line_to_node` 参数接收后从未被使用，即便恢复也需要重写。
 
 ---
 
@@ -976,15 +982,15 @@ if duration < MIN_MODIFIED_DURATION:
 | `skills/timeline_plan/models.py` | 确定性执行数据模型 |
 | `skills/timeline_plan/validator.py` | 多层级最终校验（1/2/4/5） |
 
-### 旧/并行路径
+### 旧/并行路径（已删除）
 
-| 文件 | 职责 |
-|------|------|
-| `skills/timeline_plan/canvas_matcher.py` | 多次 LLM run + shuffle + voting 匹配 |
-| `skills/timeline_plan/edit_planner.py` | operation_type 判断 |
-| `skills/timeline_plan/prompt_composer.py` | 分层 prompt 编辑 + 多 operation 支持 |
-| `skills/timeline_plan/prompt_extractor.py` | 旧版 prompt 改写 |
-| `skills/timeline_plan/duration_resolver.py` | 短组扩展策略 |
+| 文件 | 职责 | 状态 |
+|------|------|:----:|
+| `skills/timeline_plan/canvas_matcher.py` | 多次 LLM run + shuffle + voting 匹配 | 已删除 |
+| `skills/timeline_plan/edit_planner.py` | operation_type 判断 | 已删除 |
+| `skills/timeline_plan/prompt_composer.py` | 分层 prompt 编辑 + 多 operation 支持 | 已删除 |
+| `skills/timeline_plan/prompt_extractor.py` | 旧版 prompt 改写 | 已删除 |
+| `skills/timeline_plan/duration_resolver.py` | 短组扩展策略 | 已删除 |
 
 ### 其他 Stage
 

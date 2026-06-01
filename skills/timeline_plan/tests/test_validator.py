@@ -80,7 +80,7 @@ from skills.timeline_plan.models import TimelinePlanItem
 class TestValidateTimelineItem:
     def test_valid_seedance_item(self):
         item = TimelinePlanItem(
-            shot_id="shot_1", shot_number=1, source="seedance",
+            shot_id="shot_1", shot_number=1, source="modified",
             start_sec=2.0, end_sec=6.0, scene_description="Test",
             rewritten_prompt="A prompt with dialogue",
         )
@@ -97,7 +97,7 @@ class TestValidateTimelineItem:
 
     def test_inverted_time_range(self):
         item = TimelinePlanItem(
-            shot_id="bad", shot_number=1, source="seedance",
+            shot_id="bad", shot_number=1, source="modified",
             start_sec=10.0, end_sec=5.0, scene_description="T",
             rewritten_prompt="prompt",
         )
@@ -106,7 +106,7 @@ class TestValidateTimelineItem:
 
     def test_seedance_without_prompt(self):
         item = TimelinePlanItem(
-            shot_id="bad", shot_number=1, source="seedance",
+            shot_id="bad", shot_number=1, source="modified",
             start_sec=2.0, end_sec=6.0, scene_description="T",
         )
         errors = validate_timeline_item(item)
@@ -124,7 +124,7 @@ class TestValidateTimelineItem:
 class TestValidateTimelineItems:
     def test_no_errors_for_clean_timeline(self):
         items = [
-            TimelinePlanItem(shot_id="s1", shot_number=1, source="seedance",
+            TimelinePlanItem(shot_id="s1", shot_number=1, source="modified",
                              start_sec=0.0, end_sec=4.0, scene_description="A",
                              rewritten_prompt="prompt"),
             TimelinePlanItem(shot_id="s2", shot_number=2, source="original",
@@ -135,7 +135,7 @@ class TestValidateTimelineItems:
 
     def test_detects_overlap(self):
         items = [
-            TimelinePlanItem(shot_id="s1", shot_number=1, source="seedance",
+            TimelinePlanItem(shot_id="s1", shot_number=1, source="modified",
                              start_sec=0.0, end_sec=5.0, scene_description="A",
                              rewritten_prompt="p", covered_line_ids=["l1"]),
             TimelinePlanItem(shot_id="s2", shot_number=2, source="original",
@@ -146,10 +146,10 @@ class TestValidateTimelineItems:
 
     def test_detects_duplicate_line_coverage(self):
         items = [
-            TimelinePlanItem(shot_id="s1", shot_number=1, source="seedance",
+            TimelinePlanItem(shot_id="s1", shot_number=1, source="modified",
                              start_sec=0.0, end_sec=5.0, scene_description="A",
                              rewritten_prompt="p", covered_line_ids=["l1", "l2"]),
-            TimelinePlanItem(shot_id="s2", shot_number=2, source="seedance",
+            TimelinePlanItem(shot_id="s2", shot_number=2, source="modified",
                              start_sec=5.0, end_sec=10.0, scene_description="B",
                              rewritten_prompt="p", covered_line_ids=["l2", "l3"]),
         ]

@@ -97,11 +97,11 @@ def determine_cut_points(
 
         results.append((final_start, final_end))
 
-    results = _fill_gaps(results)
+    results = _snap_to_neighbor(results)
     return results
 
 
-def _fill_gaps(
+def _snap_to_neighbor(
     boundaries: List[Tuple[float, float]],
 ) -> List[Tuple[float, float]]:
     """Ensure no gaps between adjacent shot boundaries."""

@@ -12,9 +12,10 @@ import sys
 import time
 import tempfile
 import urllib.request
+import urllib.error
 import uuid
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 WORK_DIR = Path(__file__).resolve().parents[2] / "generated"
 
@@ -29,31 +30,45 @@ def _ensure_seedance_import():
     except ImportError:
         return None, None, None, None, None
 
-def _load_env():
-    """Load .env files once at module level."""
-    for env_path in [
-        Path("~/workspace/lingolens/backend/.env").expanduser(),
-        Path("~/workspace/shakespeare/.env").expanduser(),
-    ]:
-        if env_path.exists():
-            with open(env_path) as f:
-                for line in f:
-                    line = line.strip()
-                    if line and not line.startswith("#") and "=" in line:
-                        k, v = line.split("=", 1)
-                        os.environ.setdefault(k.strip(), v.strip())
-
-_load_env()
-_SeedanceClient, _SeedanceModel, _AssetType, _SeedanceRatio, _SeedanceResolution = _ensure_seedance_import()
-SEEDANCE_AVAILABLE = _SeedanceClient is not None
-if SEEDANCE_AVAILABLE:
-    _seedance_client = _SeedanceClient()
-else:
-    _seedance_client = None
+# Lazy seedance client — initialized on first use, after env is loaded
+_seedance_client = None
+_seedance_available_cache = None
 
 
-from skills.timeline_plan.models import normalize_seedance_duration
+def _get_seedance():
+    """Lazy seedance init. Returns (client, Model, AssetType, Ratio, Resolution, is_available).
+    
+    Calls load_pipeline_env() internally to ensure env is loaded.
+    Import failures (lingolens not installed) are cached permanently.
+    Credential/env failures are retried on each call.
+    """
+    global _seedance_client, _seedance_available_cache
+    
+    from skills.common.env import load_pipeline_env
+    load_pipeline_env()
 
+    # Import failure is permanent — lingolens is either installed or not
+    if _seedance_available_cache is False:
+        return None, None, None, None, None, False
+    
+    # Already initialized successfully
+    if _seedance_client is not None:
+        Client, Model, AssetType, Ratio, Resolution = _ensure_seedance_import()
+        return _seedance_client, Model, AssetType, Ratio, Resolution, True
+
+    Client, Model, AssetType, Ratio, Resolution = _ensure_seedance_import()
+    if Client is None:
+        _seedance_available_cache = False
+        return None, None, None, None, None, False
+
+    try:
+        _seedance_client = Client()
+        _seedance_available_cache = True
+        return _seedance_client, Model, AssetType, Ratio, Resolution, True
+    except (ValueError, Exception) as e:
+        # Do NOT cache credential failures — env may be loaded later
+        print(f"  [WARN] Seedance unavailable: {e}")
+        return None, None, None, None, None, False
 
 def normalize_segment_encoding(input_path: str, output_path: str) -> None:
     """Re-encode segment to consistent format: libx264 high, yuv420p, aac 44.1kHz."""
@@ -94,105 +109,14 @@ def _probe_duration(video_path: str) -> float:
     return float(info.get("format", {}).get("duration", 0.0))
 
 
-def _download_image_locally(url: str) -> str:
-    """Download a reference image to a temp file. Returns local path or empty string."""
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    for attempt in range(3):
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                data = resp.read()
-            fd, path = tempfile.mkstemp(suffix=".png")
-            with os.fdopen(fd, "wb") as f:
-                f.write(data)
-            return path
-        except Exception:
-            if attempt == 2:
-                return ""
-            time.sleep(2)
-    return ""
-
-
-async def _upload_local_image(path: str, name: str) -> str:
-    """Upload image to OSS → create seedance asset → return asset ID."""
-    if not path or not os.path.exists(path):
-        return ""
-    if not SEEDANCE_AVAILABLE:
-        return ""
-    try:
-        import oss2
-        auth = oss2.Auth(os.environ['ALIYUN_ACCESS_KEY_ID'], os.environ['ALIYUN_ACCESS_KEY_SECRET'])
-        bucket = oss2.Bucket(auth, os.environ['ALIYUN_OSS_ENDPOINT'], os.environ['ALIYUN_OSS_BUCKET'])
-        key = f"seedance_refs/{name}_{uuid.uuid4().hex[:8]}.png"
-        bucket.put_object_from_file(key, path)
-        url = bucket.sign_url('GET', key, 86400)
-        resp = await _seedance_client.create_asset(url=url, asset_type=_AssetType.IMAGE, name=name)
-        aid = resp.get("data", {}).get("id", "") if isinstance(resp, dict) else ""
-        if aid:
-            await _seedance_client.wait_for_asset(aid, max_wait_time=120)
-        return aid
-    except Exception as e:
-        print(f"    ⚠️  Upload failed: {e}")
-        return ""
-
-
-async def _generate_via_seedance(item: dict, duration: int) -> str:
-    """Generate a video via seedance for a single TimelinePlanItem.
-
-    Args:
-        item: TimelinePlanItem as dict (from JSON).
-        duration: Target duration in seconds (integer, 5-30).
-
-    Returns:
-        URL of generated video, or empty string on failure.
-    """
-    if not SEEDANCE_AVAILABLE:
-        return ""
-
-    prompt = item.get("rewritten_prompt", "")
-    ref_images = item.get("ref_images", [])
-
-    if not prompt or not ref_images:
-        return ""
-
-    shot_num = item.get("shot_number", 0)
-    name = f"shot_{shot_num}"
-
-    print(f"    [{name}] Downloading {len(ref_images)} images...")
-    local_paths = []
-    for u in ref_images:
-        lp = _download_image_locally(u)
-        if lp:
-            local_paths.append(lp)
-
-    if not local_paths:
-        print(f"    [{name}] ❌ All image downloads failed")
-        return ""
-
-    print(f"    [{name}] Uploading {len(local_paths)} images to seedance...")
-    asset_ids = []
-    for i, lp in enumerate(local_paths):
-        aid = await _upload_local_image(lp, f"gen_{name}_{i}")
-        if aid:
-            asset_ids.append(aid)
-        os.unlink(lp)
-
-    if not asset_ids:
-        return ""
-
-    asset_urls = [f"asset://{aid}" for aid in asset_ids]
-    print(f"    [{name}] Generating (seedance fast, {duration}s)...")
-    try:
-        result = await _seedance_client.multimodal_reference_to_video(
-            prompt=prompt, images=asset_urls,
-            model=_SeedanceModel.SEEDANCE_2_0_FAST,
-            duration=duration, ratio=_SeedanceRatio.RATIO_9_16,
-            resolution=_SeedanceResolution.RESOLUTION_720P,
-            generate_audio=True, wait=True, max_wait_time=900,
-        )
-        return result.get("video_url", "")
-    except Exception as e:
-        print(f"    [{name}] ❌ seedance failed: {e}")
-        return ""
+def _extract_asset_id(asset_result: dict) -> Optional[str]:
+    """Extract asset ID from create_asset response."""
+    data = asset_result.get("data", {})
+    if isinstance(data, dict):
+        raw = data.get("id")
+        if raw:
+            return str(raw)
+    return None
 
 
 def _download_video(url: str, path: Path) -> bool:
@@ -201,12 +125,23 @@ def _download_video(url: str, path: Path) -> bool:
         return False
     if path.exists():
         return True
+    _validate_external_url(url)
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     for attempt in range(3):
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
+                content_length = resp.headers.get("Content-Length")
+                if content_length:
+                    size_mb = int(content_length) / (1024 * 1024)
+                    if size_mb > 500:
+                        raise ValueError(f"Video too large: {size_mb:.0f}MB (max 500MB)")
+                MAX_VIDEO_BYTES = 500 * 1024 * 1024
+                total = 0
                 with open(path, "wb") as f:
-                    while chunk := resp.read(8192):
+                    while chunk := resp.read(1048576):  # 1MB chunks
+                        total += len(chunk)
+                        if total > MAX_VIDEO_BYTES:
+                            raise ValueError(f"Video download exceeded {MAX_VIDEO_BYTES} bytes")
                         f.write(chunk)
             print(f"    Downloaded {path.stat().st_size//1024}KB")
             return True
@@ -223,7 +158,7 @@ async def assemble_video(
     original_video: str,
     output_path: str,
     skip_seedance: bool = False,
-) -> str:
+) -> dict:
     """Assemble final video from TimelinePlan.
 
     Args:
@@ -248,6 +183,7 @@ async def assemble_video(
     work_dir.mkdir(exist_ok=True)
 
     segment_paths: List[str] = []
+    fallback_report: List[dict] = []
 
     for idx, item in enumerate(items):
         source = item.get("source", "original")
@@ -263,23 +199,46 @@ async def assemble_video(
                 seg_path,
             ], capture_output=True, check=True)
             print(f"  [ORIG] Shot {item['shot_number']}: {item['start_sec']:.1f}s-{item['end_sec']:.1f}s")
-        elif source == "seedance":
+        elif source == "modified":
             planned_duration = item["end_sec"] - item["start_sec"]
-            duration = item.get("seedance_duration", -1)
+            duration = max(4, int(planned_duration))
             video_url = await _generate_via_seedance(item, duration)
             if video_url and _download_video(video_url, Path(seg_path)):
                 actual = _probe_duration(seg_path)
+                if actual > 0 and actual < planned_duration - 0.5:
+                    print(f"  [SEED-FB] Shot {item['shot_number']}: seedance output {actual:.1f}s "
+                          f"too short (planned {planned_duration:.1f}s) → original fallback")
+                    fallback_report.append({
+                        "segment_id": item.get("shot_id", f"mod_{idx}"),
+                        "planned_source": "modified",
+                        "actual_source": "original_fallback",
+                        "reason": "seedance_output_too_short",
+                        "affected_line_ids": item.get("covered_line_ids", []),
+                    })
+                    # Replace the short seedance with original fallback
+                    subprocess.run([
+                        "ffmpeg", "-y",
+                        "-ss", f"{item['start_sec']:.3f}",
+                        "-i", original_video,
+                        "-t", f"{item['end_sec'] - item['start_sec']:.3f}",
+                        "-c:v", "libx264", "-c:a", "aac",
+                        seg_path,
+                    ], capture_output=True, check=True)
+                    actual = _probe_duration(seg_path)
+                    print(f"  [SEED-FB] Shot {item['shot_number']}: fallback {actual:.1f}s")
                 if actual > 0 and actual > planned_duration + 0.3:
                     trimmed = str(work_dir / f"seg_{idx:03d}_trimmed.mp4")
                     subprocess.run([
                         "ffmpeg", "-y", "-i", seg_path,
                         "-t", f"{planned_duration:.3f}",
-                        "-c", "copy", trimmed,
+                        "-c:v", "libx264", "-c:a", "aac",
+                        "-preset", "ultrafast",
+                        trimmed,
                     ], capture_output=True, check=True)
                     os.replace(trimmed, seg_path)
                 print(f"  [SEED] Shot {item['shot_number']}: seedance {actual:.1f}s (planned {planned_duration:.1f}s)")
             else:
-                # Fallback to original segment — don't crash on ffmpeg failure
+                # Fallback to original segment
                 try:
                     subprocess.run([
                         "ffmpeg", "-y",
@@ -290,11 +249,32 @@ async def assemble_video(
                         seg_path,
                     ], capture_output=True, check=True)
                     print(f"  [SEED-FB] Shot {item['shot_number']}: seedance failed → original fallback")
-                except subprocess.CalledProcessError:
-                    print(f"  [SEED-FB] Shot {item['shot_number']}: seedance + fallback both failed → skipped")
+                    fallback_report.append({
+                        "segment_id": item.get("shot_id", f"mod_{idx}"),
+                        "planned_source": "modified",
+                        "actual_source": "original_fallback",
+                        "reason": "seedance_api_failed",
+                        "affected_line_ids": item.get("covered_line_ids", []),
+                    })
+                except subprocess.CalledProcessError as e:
+                    raise RuntimeError(
+                        f"Shot {item['shot_number']}: seedance + fallback both failed. "
+                        f"ffmpeg stderr: {e.stderr.decode()[:200] if e.stderr else 'unknown'}"
+                    ) from e
 
         if os.path.exists(seg_path) and os.path.getsize(seg_path) > 0:
             segment_paths.append(seg_path)
+
+    # ── Integrity check: every plan item must produce a segment ──
+    planned_modified = sum(1 for item in items if item.get("source") == "modified" and not skip_seedance)
+    planned_original = sum(1 for item in items if item.get("source") != "modified" or skip_seedance)
+    planned_total = planned_modified + planned_original
+    if len(segment_paths) != planned_total:
+        missing = planned_total - len(segment_paths)
+        raise RuntimeError(
+            f"Segment count mismatch: {len(segment_paths)} produced, "
+            f"{planned_total} planned ({missing} missing). Aborting."
+        )
 
     if not segment_paths:
         raise RuntimeError("No valid segments produced")
@@ -318,20 +298,54 @@ async def assemble_video(
         "-i", concat_file, "-c", "copy", output_path,
     ], capture_output=True, text=True)
     if r.returncode != 0:
-        r = subprocess.run([
+        first_stderr = r.stderr[:300]
+    first_stderr = ""
+    r = subprocess.run([
             "ffmpeg", "-y", "-f", "concat", "-safe", "0",
             "-i", concat_file, "-c:v", "libx264", "-c:a", "aac", output_path,
         ], capture_output=True, text=True)
     if r.returncode != 0:
-        raise RuntimeError(f"Concat failed: {r.stderr[:300]}")
+        raise RuntimeError(
+            f"Concat failed (copy mode: {first_stderr[:100]}...; "
+            f"re-encode mode: {r.stderr[:300]})"
+        )
 
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
     print(f"  Final: {output_path} ({size_mb:.1f}MB)")
 
+    # ── Duration integrity check ──
+    planned_total_duration = sum(item["end_sec"] - item["start_sec"] for item in items)
+    actual_duration = _probe_duration(output_path)
+    drift = actual_duration - planned_total_duration
+    if abs(drift) > 2.0:
+        raise RuntimeError(
+            f"Duration drift too large: planned {planned_total_duration:.1f}s, "
+            f"actual {actual_duration:.1f}s, drift {drift:+.1f}s"
+        )
+    print(f"  Duration OK: {actual_duration:.1f}s (planned {planned_total_duration:.1f}s)")
+
     # Clean up intermediate segments
     shutil.rmtree(work_dir, ignore_errors=True)
 
-    return output_path
+    # Write execution report
+    report_path = str(out_dir / "execution_report.json")
+    report = {
+        "total_items": len(items),
+        "planned_modified": planned_modified,
+        "actual_modified": planned_modified - len(fallback_report),
+        "fallback_count": len(fallback_report),
+        "fallbacks": fallback_report,
+    }
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+    if fallback_report:
+        affected = set()
+        for fb in fallback_report:
+            affected.update(fb.get("affected_line_ids", []))
+        print(f"  ⚠️  {len(fallback_report)} segments fell back to original "
+              f"({len(affected)} line(s) affected) → {report_path}")
+
+    return {"output_path": output_path, "report": report}
 
 
 async def main():
@@ -341,7 +355,10 @@ async def main():
     p.add_argument("--output", required=True)
     p.add_argument("--skip-seedance", action="store_true")
     args = p.parse_args()
-    await assemble_video(args.plan, args.video, args.output, args.skip_seedance)
+    result = await assemble_video(args.plan, args.video, args.output, args.skip_seedance)
+    print(f"Output: {result['output_path']}")
+    if result["report"]["fallback_count"] > 0:
+        print(f"Warning: {result['report']['fallback_count']} segments used original fallback")
 
 if __name__ == "__main__":
     asyncio.run(main())
