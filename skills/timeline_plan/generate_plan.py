@@ -178,7 +178,7 @@ def main():
     cuts: List[CutPoint] = []
     if args.cuts and Path(args.cuts).exists():
         with open(args.cuts) as f:
-            cuts = [CutPoint(time_sec=c["time_sec"], confidence=c.get("confidence", 1.0)) for c in json.load(f)]
+            cuts = [CutPoint(time_sec=c["time_sec"]) for c in json.load(f)]
 
     class _SW:
         class _S:
