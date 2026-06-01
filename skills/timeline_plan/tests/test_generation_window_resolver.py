@@ -119,6 +119,25 @@ class TestResolveGenerationWindows:
         for i in range(len(sorted_w) - 1):
             assert sorted_w[i].end_sec <= sorted_w[i + 1].start_sec + 0.1
 
+    def test_max_duration_enforced(self):
+        atoms = []
+        for i in range(5):
+            atoms.append(_make_atom(f"A{i}", start=i*8.0, end=i*8.0+3.0, matched_node="n1", lines=[_make_line(f"L{i}", "a", "b")]))
+        nodes = [CanvasNode(node_id="n1", prompt="test", video_url="")]
+        windows = resolve_generation_windows(atoms=atoms, all_lines=[], canvas_nodes=nodes, video_duration=50.0)
+        for w in windows:
+            assert w.duration_sec <= 30.0, f"Window {w.window_id} exceeds max: {w.duration_sec}"
+
+    def test_asr_boundary_snapping(self):
+        atom = _make_atom("A1", start=2.0, end=3.5, matched_node="n1", lines=[_make_line("L1", "a", "b", start=2.5, end=3.0)])
+        all_lines = [
+            AtomLine(line_id="L2", speaker="S", original="x", rewritten="x", start_sec=4.0, end_sec=4.5, shot_scene="test"),
+        ]
+        nodes = [CanvasNode(node_id="n1", prompt="test", video_url="")]
+        windows = resolve_generation_windows(atoms=[atom], all_lines=all_lines, canvas_nodes=nodes, video_duration=10.0)
+        w = windows[0]
+        assert not (4.0 < w.end_sec < 4.5), f"Window end {w.end_sec} is inside line L2"
+
 
 if __name__ == "__main__":
     import sys
