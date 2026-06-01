@@ -110,13 +110,89 @@ def _probe_duration(video_path: str) -> float:
 
 
 def _extract_asset_id(asset_result: dict) -> Optional[str]:
-    """Extract asset ID from create_asset response."""
     data = asset_result.get("data", {})
     if isinstance(data, dict):
         raw = data.get("id")
         if raw:
             return str(raw)
     return None
+
+
+def _validate_external_url(url: str) -> None:
+    from urllib.parse import urlparse
+    import ipaddress, socket
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Only http/https URLs allowed, got: {parsed.scheme}")
+    if not parsed.hostname:
+        raise ValueError(f"URL must include a hostname: {url}")
+    hostname = parsed.hostname.lower()
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        raise ValueError(f"Blocked hostname: {hostname}")
+    try:
+        addrs = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        raise ValueError(f"Could not resolve hostname: {hostname}") from e
+    for info in addrs:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+                raise ValueError(f"Blocked IP: {ip_str}")
+        except ValueError:
+            continue
+
+
+async def _generate_via_seedance(item: dict, duration: int) -> str:
+    """Generate a video via seedance for a single TimelinePlanItem.
+
+    Registers reference images as assets (bypasses face detection),
+    then generates video using asset:// URLs.
+    """
+    client, Model, AssetType, Ratio, Resolution, ok = _get_seedance()
+    if not ok:
+        return ""
+
+    prompt = item.get("rewritten_prompt", "")
+    ref_images = item.get("ref_images", [])
+
+    if not prompt or not ref_images:
+        return ""
+
+    shot_num = item.get("shot_number", 0)
+    name = f"shot_{shot_num}"
+
+    image_urls = [u if isinstance(u, str) else u.get("url", "") for u in ref_images]
+    image_urls = [u for u in image_urls if u]
+
+    asset_ids = []
+    for i, url in enumerate(image_urls):
+        try:
+            result = await client.create_asset(url=url, asset_type=AssetType.IMAGE, name=f"{name}_ref_{i}")
+            aid = _extract_asset_id(result)
+            if aid:
+                await client.wait_for_asset(aid, max_wait_time=120)
+                asset_ids.append(aid)
+        except Exception as e:
+            print(f"    [{name}] ⚠️  Asset creation failed for ref {i}: {e}")
+
+    if not asset_ids:
+        return ""
+
+    asset_urls = [f"asset://{aid}" for aid in asset_ids]
+    duration_label = f"{duration}s" if duration > 0 else "auto"
+    print(f"    [{name}] Generating (seedance fast, {duration_label}, {len(asset_urls)} refs)...")
+    try:
+        kwargs = dict(prompt=prompt, images=asset_urls, model=Model.SEEDANCE_2_0_FAST,
+                      ratio=Ratio.RATIO_9_16, resolution=Resolution.RESOLUTION_720P,
+                      generate_audio=True, wait=True, max_wait_time=900)
+        if duration > 0:
+            kwargs["duration"] = duration
+        result = await client.multimodal_reference_to_video(**kwargs)
+        return result.get("video_url", "")
+    except Exception as e:
+        print(f"    [{name}] ❌ seedance failed: {e}")
+        return ""
 
 
 def _download_video(url: str, path: Path) -> bool:
@@ -293,14 +369,14 @@ async def assemble_video(
     concat_file = str(work_dir / "concat.txt")
     _write_concat_file(normalized_paths, concat_file)
     print(f"\n  Concatenating {len(normalized_paths)} segments...")
+    first_stderr = ""
     r = subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0",
         "-i", concat_file, "-c", "copy", output_path,
     ], capture_output=True, text=True)
     if r.returncode != 0:
         first_stderr = r.stderr[:300]
-    first_stderr = ""
-    r = subprocess.run([
+        r = subprocess.run([
             "ffmpeg", "-y", "-f", "concat", "-safe", "0",
             "-i", concat_file, "-c:v", "libx264", "-c:a", "aac", output_path,
         ], capture_output=True, text=True)

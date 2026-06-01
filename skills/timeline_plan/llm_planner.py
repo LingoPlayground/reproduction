@@ -102,12 +102,12 @@ Be inclusive — false positives are filtered later.
 ## Output
 Return ONLY JSON. Every line MUST appear.
 ```json
-{{{{
+{{
   "candidates": [
-    {{{{"line_id": "L1", "candidate_node_ids": ["n1", "n3"], "candidate_count": 2}}}},
-    {{{{"line_id": "L2", "candidate_node_ids": [], "candidate_count": 0}}}}
+    {{"line_id": "L1", "candidate_node_ids": ["n1", "n3"], "candidate_count": 2}},
+    {{"line_id": "L2", "candidate_node_ids": [], "candidate_count": 0}}
   ]
-}}}}
+}}
 ```"""
 
 
@@ -178,14 +178,14 @@ or split across multiple quotes in the prompt (e.g. \"It's no use\" and
 ## Output
 Return ONLY JSON. Every line MUST appear (either with a node_id or in unmatched).
 ```json
-{{{{
+{{
   "line_matches": [
-    {{{{"line_id": "L1", "node_id": "n1", "match_reasoning": "...", "original_dialogue_in_prompt": "..." or null, "confidence": 0.95}}}}
+    {{"line_id": "L1", "node_id": "n1", "match_reasoning": "...", "original_dialogue_in_prompt": "..." or null, "confidence": 0.95}}
   ],
   "unmatched": [
-    {{{{"line_id": "L2", "reason": "no candidate matches"}}}}
+    {{"line_id": "L2", "reason": "no candidate matches"}}
   ]
-}}}}
+}}
 ```"""
 
 
