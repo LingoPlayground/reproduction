@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 from skills.timeline_plan.models import (
-    EditAtom, AtomLine, GenerationWindow, CanvasNode,
+    EditAtom, AtomLine, GenerationWindow, CanvasNode, WindowPlanDraft,
     MIN_MODIFIED_DURATION, MAX_MODIFIED_DURATION,
 )
 
@@ -71,24 +71,32 @@ def _mark_fallback(window: GenerationWindow, reason: str) -> None:
     )
 
 
-def resolve_generation_windows(
+def _group_atoms_from_drafts(
     atoms: list[EditAtom],
-    all_lines: list[AtomLine],
-    canvas_nodes: list[CanvasNode],
-    video_duration: float,
-    min_duration_sec: float = MIN_MODIFIED_DURATION,
-    max_duration_sec: float = MAX_MODIFIED_DURATION,
-) -> list[GenerationWindow]:
-    if not atoms:
-        return []
+    window_drafts: list[WindowPlanDraft],
+) -> list[tuple[list[EditAtom], WindowPlanDraft | None]]:
+    atom_map = {a.atom_id: a for a in atoms}
+    used: set[str] = set()
+    groups: list[tuple[list[EditAtom], WindowPlanDraft | None]] = []
+    for draft in window_drafts:
+        group = [atom_map[aid] for aid in draft.atom_ids if aid in atom_map and aid not in used]
+        if not group:
+            continue
+        group.sort(key=lambda a: a.start_sec)
+        groups.append((group, draft))
+        used.update(a.atom_id for a in group)
 
-    node_map: dict[str, CanvasNode] = {n.node_id: n for n in canvas_nodes}
-    windows: list[GenerationWindow] = []
-    window_counter = 0
+    for atom in atoms:
+        if atom.atom_id not in used:
+            groups.append(([atom], None))
+    groups.sort(key=lambda pair: pair[0][0].start_sec)
+    return groups
 
-    sorted_atoms = sorted(atoms, key=lambda a: a.start_sec)
 
-    # Step 1: Group atoms with same node + small gap
+def _fallback_group_atoms(
+    sorted_atoms: list[EditAtom],
+    max_duration_sec: float,
+) -> list[tuple[list[EditAtom], WindowPlanDraft | None]]:
     groups: list[list[EditAtom]] = []
     current: list[EditAtom] = [sorted_atoms[0]]
 
@@ -101,7 +109,6 @@ def resolve_generation_windows(
             and prev.matched_node_id == atom.matched_node_id
         )
         if same_node and gap <= 2.0:
-            # Also check we don't exceed max duration
             cur_duration = atom.end_sec - current[0].start_sec
             if cur_duration <= max_duration_sec:
                 current.append(atom)
@@ -112,9 +119,34 @@ def resolve_generation_windows(
             groups.append(current)
             current = [atom]
     groups.append(current)
+    return [(group, None) for group in groups]
+
+
+def resolve_generation_windows(
+    atoms: list[EditAtom],
+    all_lines: list[AtomLine],
+    canvas_nodes: list[CanvasNode],
+    video_duration: float,
+    min_duration_sec: float = MIN_MODIFIED_DURATION,
+    max_duration_sec: float = MAX_MODIFIED_DURATION,
+    window_drafts: list[WindowPlanDraft] | None = None,
+) -> list[GenerationWindow]:
+    if not atoms:
+        return []
+
+    node_map: dict[str, CanvasNode] = {n.node_id: n for n in canvas_nodes}
+    windows: list[GenerationWindow] = []
+    window_counter = 0
+
+    sorted_atoms = sorted(atoms, key=lambda a: a.start_sec)
+
+    if window_drafts:
+        groups = _group_atoms_from_drafts(sorted_atoms, window_drafts)
+    else:
+        groups = _fallback_group_atoms(sorted_atoms, max_duration_sec)
 
     # Step 2: Build GenerationWindow per group
-    for group in groups:
+    for group, draft in groups:
         window_counter += 1
         group_start = min(a.start_sec for a in group)
         group_end = max(a.end_sec for a in group)
@@ -123,11 +155,11 @@ def resolve_generation_windows(
         )
 
         primary = group[0]
-        matched_nid = primary.matched_node_id
+        matched_nid = draft.node_id if draft else primary.matched_node_id
 
         ref_images: list[str] = []
         degradation_level = 0
-        degradation_reason = ""
+        degradation_reason = draft.fallback_reason if draft else ""
 
         if matched_nid and matched_nid in node_map:
             node = node_map[matched_nid]
@@ -149,7 +181,7 @@ def resolve_generation_windows(
             end_sec=group_end,
             atoms=group,
             matched_node_id=matched_nid,
-            match_confidence=primary.match_confidence,
+            match_confidence=draft.confidence if draft else primary.match_confidence,
             ref_images=ref_images,
             degradation_level=degradation_level,
             degradation_reason=degradation_reason,

@@ -78,6 +78,21 @@ class EditAtom:
 
 
 @dataclass
+class WindowPlanDraft:
+    """LLM-planned generation intent before deterministic materialization."""
+    draft_id: str
+    atom_ids: List[str] = field(default_factory=list)
+    node_id: Optional[str] = None
+    confidence: Optional[float] = None
+    reasoning: str = ""
+    fallback_reason: str = ""
+
+    @property
+    def is_fallback(self) -> bool:
+        return not self.node_id
+
+
+@dataclass
 class GenerationWindow:
     window_id: str
     start_sec: float

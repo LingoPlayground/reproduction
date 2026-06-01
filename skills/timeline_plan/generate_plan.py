@@ -14,7 +14,7 @@ from typing import Dict, List
 
 from skills.timeline_plan.models import (
     TimelinePlan, TimelinePlanItem, CanvasNode, CutPoint, Stage3Input,
-    AtomLine, EditAtom,
+    AtomLine,
 )
 from skills.timeline_plan.edit_atom_builder import build_edit_atoms
 from skills.timeline_plan.segment_matcher import match_atoms_to_nodes
@@ -111,15 +111,17 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
     logger.info("Target atoms: %d (with rewritten lines)", len(target_atoms))
 
     logger.info("Matching atoms to canvas nodes...")
-    match_atoms_to_nodes(target_atoms, canvas_nodes)
+    window_drafts = match_atoms_to_nodes(target_atoms, canvas_nodes)
     matched = sum(1 for a in target_atoms if a.matched_node_id)
-    logger.info("Matcher: %d/%d atoms matched", matched, len(target_atoms))
+    logger.info("Matcher: %d/%d atoms matched, %d window drafts",
+                matched, len(target_atoms), len(window_drafts))
 
     logger.info("Resolving generation windows...")
     all_lines = _collect_all_atom_lines(rewrite_lines_all)
     windows = resolve_generation_windows(
         atoms=target_atoms, all_lines=all_lines,
         canvas_nodes=canvas_nodes, video_duration=video_duration,
+        window_drafts=window_drafts,
     )
     logger.info("Windows: %d generation windows", len(windows))
 

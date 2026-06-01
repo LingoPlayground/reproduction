@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from skills.timeline_plan.models import EditAtom, CanvasNode
+from skills.timeline_plan.models import EditAtom, CanvasNode, WindowPlanDraft
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,11 @@ scene/environment/action described.
 - If no node reasonably matches an atom, put it in unmatched.
 - Every atom must appear in either matches or unmatched.
 - Semantic similarity is acceptable when exact text differs.
+- Also group matched atoms into generation window drafts. A window draft
+  should contain atoms that belong to one coherent prompt intent and one
+  canvas node. Do not group different node intents together.
+- Each window_draft must reference only atom_ids that are matched to the same
+  node_id in matches. Never include unmatched atoms in window_drafts.
 
 ## Output
 Return ONLY JSON:
@@ -96,6 +101,9 @@ Return ONLY JSON:
   "matches": [
     {{"atom_id": "A1", "node_id": "n1", "confidence": 0.9, "reasoning": "..."}}
   ],
+  "window_drafts": [
+    {{"draft_id": "draft_001", "atom_ids": ["A1", "A2"], "node_id": "n1", "confidence": 0.9, "reasoning": "..."}}
+  ],
   "unmatched": [
     {{"atom_id": "A2", "reason": "no canvas prompt matches this scene"}}
   ]
@@ -103,9 +111,9 @@ Return ONLY JSON:
 ```"""
 
 
-def _parse_match_response(text: str) -> tuple[list[dict], list[dict]]:
+def _parse_match_response(text: str) -> tuple[list[dict], list[dict], list[dict]]:
     if not text or not text.strip():
-        return [], []
+        return [], [], []
     t = text.strip()
     if t.startswith("```"):
         ls = t.split("\n")
@@ -119,7 +127,7 @@ def _parse_match_response(text: str) -> tuple[list[dict], list[dict]]:
     except json.JSONDecodeError:
         b = t.find("{")
         if b < 0:
-            return [], []
+            return [], [], []
         d = 0
         for i in range(b, len(t)):
             if t[i] in "[{":
@@ -133,22 +141,84 @@ def _parse_match_response(text: str) -> tuple[list[dict], list[dict]]:
                 except json.JSONDecodeError:
                     pass
         else:
-            return [], []
-    return data.get("matches", []), data.get("unmatched", [])
+            return [], [], []
+    return data.get("matches", []), data.get("unmatched", []), data.get("window_drafts", [])
+
+
+def _safe_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _fallback_window_drafts(atoms: list[EditAtom]) -> list[WindowPlanDraft]:
+    drafts: list[WindowPlanDraft] = []
+    for idx, atom in enumerate([a for a in atoms if a.matched_node_id], start=1):
+        drafts.append(WindowPlanDraft(
+            draft_id=f"draft_{idx:03d}",
+            atom_ids=[atom.atom_id],
+            node_id=atom.matched_node_id,
+            confidence=atom.match_confidence,
+            reasoning="fallback_single_atom_draft",
+        ))
+    return drafts
+
+
+def _coerce_window_drafts(raw_drafts: list[dict], atoms: list[EditAtom]) -> list[WindowPlanDraft]:
+    atom_map = {a.atom_id: a for a in atoms}
+    drafts: list[WindowPlanDraft] = []
+    used: set[str] = set()
+    for idx, raw in enumerate(raw_drafts, start=1):
+        node_id = str(raw["node_id"]) if raw.get("node_id") else None
+        atom_ids = []
+        for aid in raw.get("atom_ids", []):
+            atom_id = str(aid)
+            atom = atom_map.get(atom_id)
+            if not atom or atom_id in used:
+                continue
+            if node_id and atom.matched_node_id != node_id:
+                continue
+            atom_ids.append(atom_id)
+        if not atom_ids:
+            continue
+        drafts.append(WindowPlanDraft(
+            draft_id=str(raw.get("draft_id") or f"draft_{idx:03d}"),
+            atom_ids=atom_ids,
+            node_id=node_id,
+            confidence=_safe_float(raw.get("confidence")),
+            reasoning=str(raw.get("reasoning", "")),
+            fallback_reason=str(raw.get("fallback_reason", "")),
+        ))
+        used.update(atom_ids)
+
+    for atom in atoms:
+        if atom.atom_id in used or not atom.matched_node_id:
+            continue
+        drafts.append(WindowPlanDraft(
+            draft_id=f"draft_{len(drafts) + 1:03d}",
+            atom_ids=[atom.atom_id],
+            node_id=atom.matched_node_id,
+            confidence=atom.match_confidence,
+            reasoning="fallback_for_unplanned_matched_atom",
+        ))
+    return drafts
 
 
 def match_atoms_to_nodes(
     atoms: list[EditAtom],
     canvas_nodes: list[CanvasNode],
-) -> None:
-    """Match each EditAtom to a CanvasNode via LLM. Updates atoms in-place."""
+) -> list[WindowPlanDraft]:
+    """Match EditAtoms to CanvasNodes and return holistic window drafts."""
     if not atoms:
-        return
+        return []
 
     client = _get_client()
     if not client:
         logger.warning("No LLM client available")
-        return
+        return []
 
     prompt = _build_matching_prompt(atoms, canvas_nodes)
     model = os.environ.get("LLM_PLANNER_MODEL", _DEFAULT_MODEL)
@@ -167,20 +237,24 @@ def match_atoms_to_nodes(
         _log_llm(prompt, text, time.time() - t0)
     except Exception as e:
         logger.error("Segment matcher LLM call failed: %s", e)
-        return
+        return []
 
-    matches, unmatched = _parse_match_response(text)
-    match_map = {m["atom_id"]: m for m in matches}
-    unmatched_ids = {u["atom_id"] for u in unmatched}
+    matches, unmatched, raw_drafts = _parse_match_response(text)
+    match_map = {str(m["atom_id"]): m for m in matches if m.get("atom_id")}
+    unmatched_ids = {str(u["atom_id"]) for u in unmatched if u.get("atom_id")}
 
     for atom in atoms:
         if atom.atom_id in match_map:
             m = match_map[atom.atom_id]
             atom.matched_node_id = m.get("node_id")
-            atom.match_confidence = float(m.get("confidence", 0.0))
+            atom.match_confidence = _safe_float(m.get("confidence")) or 0.0
             atom.match_reasoning = m.get("reasoning", "")
         elif atom.atom_id not in unmatched_ids:
             logger.warning("Atom %s missing from LLM response", atom.atom_id)
 
     matched_count = sum(1 for a in atoms if a.matched_node_id)
-    logger.info("Matcher: %d/%d atoms matched", matched_count, len(atoms))
+    drafts = _coerce_window_drafts(raw_drafts, atoms)
+    if not drafts:
+        drafts = _fallback_window_drafts(atoms)
+    logger.info("Matcher: %d/%d atoms matched, %d window drafts", matched_count, len(atoms), len(drafts))
+    return drafts

@@ -1,7 +1,7 @@
 """Tests for segment_matcher.py — EditAtom -> Canvas Node matching."""
 import json
 from unittest.mock import patch, MagicMock
-from skills.timeline_plan.models import EditAtom, AtomLine, CanvasNode
+from skills.timeline_plan.models import EditAtom, AtomLine, CanvasNode, WindowPlanDraft
 from skills.timeline_plan.segment_matcher import (
     match_atoms_to_nodes,
     _build_matching_prompt,
@@ -54,32 +54,36 @@ class TestParseMatchResponse:
     def test_parses_valid_response(self):
         response = json.dumps({
             "matches": [{"atom_id": "A1", "node_id": "n1", "confidence": 0.9, "reasoning": "good"}],
+            "window_drafts": [{"draft_id": "D1", "atom_ids": ["A1"], "node_id": "n1", "confidence": 0.9}],
             "unmatched": [],
         })
-        matches, unmatched = _parse_match_response(response)
+        matches, unmatched, drafts = _parse_match_response(response)
         assert len(matches) == 1
         assert matches[0]["atom_id"] == "A1"
         assert len(unmatched) == 0
+        assert drafts[0]["atom_ids"] == ["A1"]
 
     def test_parses_unmatched(self):
         response = json.dumps({
             "matches": [],
             "unmatched": [{"atom_id": "A2", "reason": "no match"}],
         })
-        matches, unmatched = _parse_match_response(response)
+        matches, unmatched, drafts = _parse_match_response(response)
         assert len(matches) == 0
         assert len(unmatched) == 1
+        assert drafts == []
 
     def test_parses_markdown_fenced_json(self):
         response = '```json\n{"matches": [], "unmatched": []}\n```'
-        matches, unmatched = _parse_match_response(response)
+        matches, unmatched, _ = _parse_match_response(response)
         assert matches == []
         assert unmatched == []
 
     def test_returns_empty_on_invalid(self):
-        matches, unmatched = _parse_match_response("not json at all")
+        matches, unmatched, drafts = _parse_match_response("not json at all")
         assert matches == []
         assert unmatched == []
+        assert drafts == []
 
 
 class TestMatchAtomsToNodes:
@@ -90,6 +94,7 @@ class TestMatchAtomsToNodes:
         mock_resp.choices = [MagicMock()]
         mock_resp.choices[0].message.content = json.dumps({
             "matches": [{"atom_id": "A1", "node_id": "n1", "confidence": 0.85, "reasoning": "match"}],
+            "window_drafts": [{"draft_id": "D1", "atom_ids": ["A1"], "node_id": "n1", "confidence": 0.8, "reasoning": "one intent"}],
             "unmatched": [],
         })
         mock_client.chat.completions.create.return_value = mock_resp
@@ -97,10 +102,13 @@ class TestMatchAtomsToNodes:
 
         atom = _make_atom("A1", [_make_line("L1", "hello", "hi")])
         nodes = [_make_node("n1", "hello scene")]
-        match_atoms_to_nodes([atom], nodes)
+        drafts = match_atoms_to_nodes([atom], nodes)
 
         assert atom.matched_node_id == "n1"
         assert atom.match_confidence == 0.85
+        assert len(drafts) == 1
+        assert isinstance(drafts[0], WindowPlanDraft)
+        assert drafts[0].atom_ids == ["A1"]
 
     @patch("skills.timeline_plan.segment_matcher._get_client")
     def test_unmatched_atom_stays_none(self, mock_get_client):
@@ -115,12 +123,54 @@ class TestMatchAtomsToNodes:
         mock_get_client.return_value = mock_client
 
         atom = _make_atom("A1", [_make_line("L1", "hello", "hi")])
-        match_atoms_to_nodes([atom], [])
+        drafts = match_atoms_to_nodes([atom], [])
         assert atom.matched_node_id is None
+        assert drafts == []
 
     def test_empty_atoms_noop(self):
-        match_atoms_to_nodes([], [_make_node("n1", "test")])
+        assert match_atoms_to_nodes([], [_make_node("n1", "test")]) == []
         # should not raise
+
+    @patch("skills.timeline_plan.segment_matcher._get_client")
+    def test_missing_window_drafts_falls_back_to_single_atom_drafts(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock()]
+        mock_resp.choices[0].message.content = json.dumps({
+            "matches": [{"atom_id": "A1", "node_id": "n1", "confidence": 0.75, "reasoning": "match"}],
+            "unmatched": [],
+        })
+        mock_client.chat.completions.create.return_value = mock_resp
+        mock_get_client.return_value = mock_client
+
+        atom = _make_atom("A1", [_make_line("L1", "hello", "hi")])
+        drafts = match_atoms_to_nodes([atom], [_make_node("n1", "hello")])
+
+        assert len(drafts) == 1
+        assert drafts[0].atom_ids == ["A1"]
+        assert drafts[0].node_id == "n1"
+
+    @patch("skills.timeline_plan.segment_matcher._get_client")
+    def test_window_drafts_must_match_atom_node(self, mock_get_client):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock()]
+        mock_resp.choices[0].message.content = json.dumps({
+            "matches": [{"atom_id": "A1", "node_id": "n1", "confidence": "0.75", "reasoning": "match"}],
+            "window_drafts": [{"draft_id": "D1", "atom_ids": ["A1"], "node_id": "n2", "confidence": "high"}],
+            "unmatched": [],
+        })
+        mock_client.chat.completions.create.return_value = mock_resp
+        mock_get_client.return_value = mock_client
+
+        atom = _make_atom("A1", [_make_line("L1", "hello", "hi")])
+        drafts = match_atoms_to_nodes([atom], [_make_node("n1", "hello"), _make_node("n2", "other")])
+
+        assert atom.matched_node_id == "n1"
+        assert atom.match_confidence == 0.75
+        assert len(drafts) == 1
+        assert drafts[0].atom_ids == ["A1"]
+        assert drafts[0].node_id == "n1"
 
 
 if __name__ == "__main__":

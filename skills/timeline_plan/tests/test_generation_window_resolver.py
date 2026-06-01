@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from skills.timeline_plan.models import EditAtom, AtomLine, GenerationWindow, CanvasNode
+from skills.timeline_plan.models import EditAtom, AtomLine, GenerationWindow, CanvasNode, WindowPlanDraft
 from skills.timeline_plan.generation_window_resolver import resolve_generation_windows
 
 
@@ -67,6 +67,26 @@ class TestResolveGenerationWindows:
         assert len(windows) == 1
         assert len(windows[0].atoms) == 2
         assert windows[0].duration_sec >= 4.0
+
+    def test_window_drafts_drive_grouping(self):
+        a1 = _make_atom("A1", start=0.0, end=1.5, matched_node="n1", lines=[
+            _make_line("L1", "a", "b", start=0.2, end=0.8),
+        ])
+        a2 = _make_atom("A2", start=8.0, end=9.5, matched_node="n1", lines=[
+            _make_line("L2", "c", "d", start=8.2, end=9.0),
+        ])
+        draft = WindowPlanDraft(
+            draft_id="D1", atom_ids=["A1", "A2"], node_id="n1",
+            confidence=0.8, reasoning="same prompt intent",
+        )
+        nodes = [CanvasNode(node_id="n1", prompt="test", video_url="")]
+        windows = resolve_generation_windows(
+            atoms=[a1, a2], all_lines=[], canvas_nodes=nodes,
+            video_duration=15.0, window_drafts=[draft],
+        )
+        assert len(windows) == 1
+        assert [a.atom_id for a in windows[0].atoms] == ["A1", "A2"]
+        assert windows[0].match_confidence == 0.8
 
     def test_short_atom_different_node_stays_separate(self):
         a1 = _make_atom("A1", start=0.0, end=1.5, matched_node="n1", lines=[

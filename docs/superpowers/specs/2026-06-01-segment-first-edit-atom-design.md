@@ -497,7 +497,7 @@ raw_end = last_rewritten_line.end_sec
 
 ### 8.1 目标
 
-把每个 `EditAtom` 匹配到最合适的 canvas node prompt。
+把每个 `EditAtom` 匹配到最合适的 canvas node prompt，并输出整体的 `WindowPlanDraft`。
 
 这里匹配的不是单行文本，而是：
 
@@ -545,6 +545,7 @@ LLM 指令应强调：
 - 不要只按单个关键词匹配。
 - 如果台词没有逐字出现，可以用语义相似、角色动作和场景描述匹配。
 - 如果没有合理 node，返回 unmatched。
+- `window_drafts` 只能引用已经在 `matches` 中匹配到同一 `node_id` 的 atom，不能包含 unmatched atom。
 
 ### 8.4 输出 schema
 
@@ -558,6 +559,15 @@ LLM 指令应强调：
       "reasoning": "The node describes Mia in the kitchen and contains the same accusation line."
     }
   ],
+  "window_drafts": [
+    {
+      "draft_id": "draft_001",
+      "atom_ids": ["atom_003"],
+      "node_id": "abc",
+      "confidence": 0.86,
+      "reasoning": "This is one coherent kitchen prompt intent."
+    }
+  ],
   "unmatched": [
     {
       "atom_id": "atom_007",
@@ -566,6 +576,8 @@ LLM 指令应强调：
   ]
 }
 ```
+
+`matches` 负责记录 atom 级 node 归属；`window_drafts` 负责记录一次生成调用的整体意图。`window_drafts` 和 `matches` 必须保持一致：一个 draft 只能包含已匹配到同一 `node_id` 的 atoms。Resolver 应优先 materialize `window_drafts`，只有 schema 缺失或 draft 不完整时才退回到 deterministic grouping。
 
 ### 8.5 单 node 约束
 
@@ -635,6 +647,7 @@ def resolve_generation_windows(
     video_duration: float,
     min_duration_sec: float = 4.0,
     max_duration_sec: float = 30.0,
+    window_drafts: list[WindowPlanDraft] | None = None,
 ) -> list[GenerationWindow]:
     ...
 ```
@@ -869,13 +882,14 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
     if not target_atoms:
         return build_all_original_plan(shots, scene_cuts, video_duration)
 
-    match_atoms_to_nodes(target_atoms, canvas_nodes)
+    window_drafts = match_atoms_to_nodes(target_atoms, canvas_nodes)
 
     windows = resolve_generation_windows(
         atoms=target_atoms,
         all_lines=collect_all_lines(rewrite_lines),
         canvas_nodes=canvas_nodes,
         video_duration=video_duration,
+        window_drafts=window_drafts,
     )
 
     rewrite_prompts_for_windows(windows, canvas_nodes)

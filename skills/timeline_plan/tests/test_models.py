@@ -1,6 +1,6 @@
 """Tests for models.py — v3.0 deterministic execution models."""
 from skills.timeline_plan.models import (
-    CutPoint, AtomLine, EditAtom, GenerationWindow,
+    CutPoint, AtomLine, EditAtom, WindowPlanDraft, GenerationWindow,
     CanvasNode, TimelinePlanItem, TimelinePlan,
     Stage3Input, MIN_MODIFIED_DURATION, MAX_MODIFIED_DURATION,
 )
@@ -202,10 +202,29 @@ class TestGenerationWindow:
         assert window.degradation_reason == ""
 
 
+class TestWindowPlanDraft:
+    def test_defaults(self):
+        draft = WindowPlanDraft(draft_id="D1")
+        assert draft.atom_ids == []
+        assert draft.node_id is None
+        assert draft.confidence is None
+        assert draft.reasoning == ""
+        assert draft.fallback_reason == ""
+        assert draft.is_fallback is True
+
+    def test_matched_draft(self):
+        draft = WindowPlanDraft(
+            draft_id="D1", atom_ids=["A1", "A2"], node_id="n1",
+            confidence=0.8, reasoning="same prompt intent",
+        )
+        assert draft.is_fallback is False
+        assert draft.atom_ids == ["A1", "A2"]
+
+
 if __name__ == "__main__":
     import sys
     failed = 0
-    for cls in [TestCutPoint, TestAtomLine, TestEditAtom, TestGenerationWindow,
+    for cls in [TestCutPoint, TestAtomLine, TestEditAtom, TestWindowPlanDraft, TestGenerationWindow,
             TestTimelinePlanItem, TestTimelinePlan, TestStage3Input, TestConstants]:
         t = cls()
         for name in sorted(dir(t)):
