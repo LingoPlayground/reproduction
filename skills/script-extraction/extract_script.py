@@ -45,6 +45,8 @@ except ImportError as e:
     print(f"❌ 无法导入 lingolens VideoScriptExtractor: {e}")
     sys.exit(1)
 
+from skills.scene_detection.detect_scenes import detect_scene_boundaries
+
 
 def get_multimodal_llm():
     from services.llm.factory import LLMServiceFactory
@@ -113,6 +115,11 @@ async def main() -> None:
     duration = get_video_duration(video_path, utterances)
     print(f"⏱️  视频时长: {duration:.1f}s")
 
+    print("🔍 检测场景切点...")
+    scene_cuts = detect_scene_boundaries(video_path)
+    cut_times = [c.time_sec for c in scene_cuts]
+    print(f"   {len(cut_times)} 个切点: {[f'{t:.1f}s' for t in cut_times[:10]]}{'...' if len(cut_times) > 10 else ''}")
+
     llm = get_multimodal_llm()
     extractor = VideoScriptExtractor(multimodal_llm=llm)
 
@@ -122,6 +129,16 @@ async def main() -> None:
 
     print(f"🎬 开始剧本提取...")
     try:
+        result = await extractor.extract(
+            video_path=video_path,
+            utterances=utterances,
+            duration_seconds=duration,
+            temp_dir=temp_dir,
+            scene_cut_times=cut_times,
+        )
+    except TypeError:
+        # lingolens extractor does not support scene_cut_times yet — fall back
+        print("⚠️  lingolens 暂不支持 scene_cut_times，跳过切点注入")
         result = await extractor.extract(
             video_path=video_path,
             utterances=utterances,
