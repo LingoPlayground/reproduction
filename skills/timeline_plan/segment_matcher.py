@@ -155,6 +155,7 @@ def _safe_float(value: Any) -> float | None:
 
 
 def _fallback_window_drafts(atoms: list[EditAtom]) -> list[WindowPlanDraft]:
+    # Unmatched atoms are intentionally excluded; resolver emits degraded windows for them.
     drafts: list[WindowPlanDraft] = []
     for idx, atom in enumerate([a for a in atoms if a.matched_node_id], start=1):
         drafts.append(WindowPlanDraft(
@@ -246,8 +247,9 @@ def match_atoms_to_nodes(
     for atom in atoms:
         if atom.atom_id in match_map:
             m = match_map[atom.atom_id]
+            confidence = _safe_float(m.get("confidence"))
             atom.matched_node_id = m.get("node_id")
-            atom.match_confidence = _safe_float(m.get("confidence")) or 0.0
+            atom.match_confidence = 0.0 if confidence is None else confidence
             atom.match_reasoning = m.get("reasoning", "")
         elif atom.atom_id not in unmatched_ids:
             logger.warning("Atom %s missing from LLM response", atom.atom_id)

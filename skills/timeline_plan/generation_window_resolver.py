@@ -79,7 +79,14 @@ def _group_atoms_from_drafts(
     used: set[str] = set()
     groups: list[tuple[list[EditAtom], WindowPlanDraft | None]] = []
     for draft in window_drafts:
-        group = [atom_map[aid] for aid in draft.atom_ids if aid in atom_map and aid not in used]
+        group: list[EditAtom] = []
+        for aid in draft.atom_ids:
+            if aid not in atom_map:
+                continue
+            if aid in used:
+                logger.debug("Atom %s appears in multiple window drafts; keeping first draft", aid)
+                continue
+            group.append(atom_map[aid])
         if not group:
             continue
         group.sort(key=lambda a: a.start_sec)

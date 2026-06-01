@@ -79,7 +79,7 @@ class EditAtom:
 
 @dataclass
 class WindowPlanDraft:
-    """LLM-planned generation intent before deterministic materialization."""
+    """LLM-planned generation intent; resolver computes executable timing."""
     draft_id: str
     atom_ids: List[str] = field(default_factory=list)
     node_id: Optional[str] = None
