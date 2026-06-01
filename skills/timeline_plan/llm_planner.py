@@ -338,7 +338,6 @@ def _group_by_node(matches: List[LineNodeMatch], evidence: Dict) -> List[NodeGen
             p.matched_node_ids = list(set(p.matched_node_ids) | set(g.matched_node_ids))
             p.source_time_range.end_sec = max(p.source_time_range.end_sec, g.source_time_range.end_sec)
             p.line_matches.extend(g.line_matches)
-            p.degradation_level += 1
             p.grouping_reasoning += f"; merged {g.group_id}"
             dur = p.source_time_range.end_sec - p.source_time_range.start_sec
             if dur > 30.0 or len(p.covered_line_ids) > 8:
@@ -507,7 +506,7 @@ def generate_plan_draft(evidence: Dict, canvas_nodes: Optional[List] = None) -> 
             return False
 
         logger.info("Rewriting %d groups...", len(gens))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(gens)) as pool:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(gens), 5)) as pool:
             pool.map(rewrite_one, gens)
         ok = sum(1 for g in gens if g.has_prompt)
         logger.info("Rewrite: %d/%d groups have prompt", ok, len(gens))
