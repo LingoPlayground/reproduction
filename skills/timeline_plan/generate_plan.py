@@ -14,15 +14,75 @@ from typing import Dict, List
 
 from skills.timeline_plan.models import (
     TimelinePlan, TimelinePlanItem, CanvasNode, CutPoint, Stage3Input,
+    AtomLine, EditAtom,
 )
+from skills.timeline_plan.edit_atom_builder import build_edit_atoms
+from skills.timeline_plan.segment_matcher import match_atoms_to_nodes
+from skills.timeline_plan.generation_window_resolver import resolve_generation_windows
+from skills.timeline_plan.prompt_rewriter import rewrite_prompts_for_windows
+from skills.timeline_plan.plan_finalizer import finalize_timeline_plan
 from skills.timeline_plan.cut_fusion import determine_cut_points
-from skills.timeline_plan.evidence_builder import build_evidence
-from skills.timeline_plan.llm_planner import generate_plan_draft
-from skills.timeline_plan.timeline_normalizer import normalize_plan
-from skills.timeline_plan.validator import validate_timeline_item, validate_timeline_items
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+def _collect_all_atom_lines(rewrite_lines_all: list[dict]) -> list[AtomLine]:
+    """Collect all lines as AtomLine objects for window resolution."""
+    lines = []
+    for rl in rewrite_lines_all:
+        lines.append(AtomLine(
+            line_id=str(rl.get("line_id", "")),
+            speaker=str(rl.get("speaker", "")),
+            original=str(rl.get("original", "")),
+            rewritten=str(rl.get("rewritten", "")),
+            start_sec=float(rl.get("start_seconds", 0.0)),
+            end_sec=float(rl.get("end_seconds", 0.0)),
+            shot_scene=str(rl.get("shot_scene", "")),
+        ))
+    return lines
+
+
+def _resolve_video_duration(shots: list, rewrite_lines: list[dict]) -> float:
+    """Compute video duration from shot boundaries and ASR timing."""
+    shot_end = max(
+        (s.end_seconds for s in shots if hasattr(s, 'end_seconds')),
+        default=60.0,
+    )
+    asr_end = max(
+        (float(rl.get("end_seconds", 0.0)) for rl in rewrite_lines),
+        default=0.0,
+    )
+    return max(shot_end, asr_end)
+
+
+def _build_all_original_plan(
+    shots: list,
+    scene_cuts: list[CutPoint],
+    video_duration: float,
+    title: str = "Untitled",
+    level: str = "B2",
+) -> TimelinePlan:
+    """Fallback: build an all-original plan when no lines are rewritten."""
+    cut_boundaries = determine_cut_points(shots, scene_cuts, video_duration)
+    items = []
+    for idx, shot in enumerate(shots):
+        start_s, end_s = cut_boundaries[idx]
+        items.append(TimelinePlanItem(
+            shot_id=f"shot_{getattr(shot, 'shot_number', idx)}",
+            shot_number=getattr(shot, "shot_number", idx),
+            source="original",
+            start_sec=start_s, end_sec=end_s,
+            scene_description=getattr(shot, "scene_description", "") or "",
+            original_duration=end_s - start_s,
+        ))
+    items.sort(key=lambda i: i.start_sec)
+    return TimelinePlan(
+        title=title, level=level,
+        total_duration_sec=video_duration, items=items,
+        metadata={"num_shots": len(shots), "num_items": len(items),
+                   "num_modified": 0, "num_original": len(items)},
+    )
 
 
 def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
@@ -30,119 +90,54 @@ def generate_timeline_plan(input_data: Stage3Input) -> TimelinePlan:
     shots = list(script_output.script.shots) if script_output else []
     rewrite_lines_all = input_data.rewrite_json.get("lines", [])
     canvas_nodes = input_data.canvas_nodes
-    video_cuts = input_data.video_cut_points
+    scene_cuts = input_data.video_cut_points
     level = input_data.level
 
-    video_duration = max(
-        [s.end_seconds for s in shots if hasattr(s, 'end_seconds')],
-        default=60.0,
-    )
-    max_asr_end = max(
-        (rl.get("end_seconds", 0.0) for rl in rewrite_lines_all),
-        default=0.0,
-    )
-    video_duration = max(video_duration, max_asr_end)
+    video_duration = _resolve_video_duration(shots, rewrite_lines_all)
     title = getattr(script_output, "title", "Untitled") if script_output else "Untitled"
 
-    for shot in shots:
-        sn = getattr(shot, "shot_number", 0)
-        asr_starts = [rl.get("start_seconds", 0.0) for rl in rewrite_lines_all
-                       if rl.get("shot_number") == sn and rl.get("start_seconds", 0) > 0]
-        if asr_starts:
-            offset = abs(min(asr_starts) - getattr(shot, "start_seconds", 0.0))
-            if offset > 10:
-                logger.warning("Shot %d: script vs ASR offset %.0fs", sn, offset)
+    logger.info("Building edit atoms...")
+    atoms = build_edit_atoms(
+        script_shots=shots, rewrite_lines=rewrite_lines_all,
+        scene_cuts=scene_cuts, video_duration=video_duration,
+    )
+    logger.info("Built %d atoms from %d rewrite lines", len(atoms), len(rewrite_lines_all))
 
-    # ── Stage 3A: Evidence ──
-    logger.info("Building evidence...")
-    evidence = build_evidence(shots, rewrite_lines_all, canvas_nodes, video_cuts, level)
-    logger.info("Evidence: %d rewrite lines, %d canvas nodes, %d shots with scene context",
-                len(evidence["rewrite_lines"]), len(evidence["canvas_nodes"]),
-                len(evidence["scene_context"]))
-
-    # Quick path: no rewritten lines
-    if not evidence["rewrite_lines"]:
+    target_atoms = [a for a in atoms if a.has_rewritten_lines]
+    if not target_atoms:
         logger.info("No rewritten lines — all-original plan")
-        cut_boundaries = determine_cut_points(shots, video_cuts, video_duration)
-        items = []
-        for idx, shot in enumerate(shots):
-            start_s, end_s = cut_boundaries[idx]
-            items.append(TimelinePlanItem(
-                shot_id=f"shot_{getattr(shot, 'shot_number', idx)}",
-                shot_number=getattr(shot, "shot_number", idx),
-                source="original",
-                start_sec=start_s, end_sec=end_s,
-                scene_description=getattr(shot, "scene_description", "") or "",
-                original_duration=end_s - start_s,
-            ))
-        items.sort(key=lambda i: i.start_sec)
-        return TimelinePlan(
-            title=title, level=level,
-            total_duration_sec=video_duration, items=items,
-            metadata={"num_shots": len(shots), "num_items": len(items),
-                       "num_modified": 0, "num_original": len(items)},
-        )
+        return _build_all_original_plan(shots, scene_cuts, video_duration, title, level)
 
-    # ── Stage 3B: LLM Planner (match + rewrite) ──
-    logger.info("Running LLM planner...")
-    try:
-        draft = generate_plan_draft(evidence, canvas_nodes=canvas_nodes)
-    except ValueError as e:
-        logger.error("LLM planner failed: %s", e)
-        raise
+    logger.info("Target atoms: %d (with rewritten lines)", len(target_atoms))
 
-    logger.info("Planner: %d generations, %d unmatched",
-                len(draft.node_generations), len(draft.unmatched_lines))
+    logger.info("Matching atoms to canvas nodes...")
+    match_atoms_to_nodes(target_atoms, canvas_nodes)
+    matched = sum(1 for a in target_atoms if a.matched_node_id)
+    logger.info("Matcher: %d/%d atoms matched", matched, len(target_atoms))
 
-    # ── Stage 3C: Normalizer ──
-    logger.info("Normalizing timeline...")
-    plan = normalize_plan(
-        draft=draft, script_shots=shots, canvas_nodes=canvas_nodes,
-        cut_points=video_cuts, video_duration=video_duration,
-        title=title, level=level,
+    logger.info("Resolving generation windows...")
+    all_lines = _collect_all_atom_lines(rewrite_lines_all)
+    windows = resolve_generation_windows(
+        atoms=target_atoms, all_lines=all_lines,
+        canvas_nodes=canvas_nodes, video_duration=video_duration,
+    )
+    logger.info("Windows: %d generation windows", len(windows))
+
+    logger.info("Rewriting prompts per window...")
+    rewrite_prompts_for_windows(windows, canvas_nodes, level)
+    ok = sum(1 for w in windows if w.rewritten_prompt)
+    logger.info("Rewriter: %d/%d windows have prompts", ok, len(windows))
+
+    logger.info("Finalizing timeline plan...")
+    plan = finalize_timeline_plan(
+        windows=windows, shots=shots,
+        video_duration=video_duration, title=title, level=level,
     )
 
-    # ── Post-normalization coverage ──
-    # Only check that ALL rewritten lines are covered (neighbor lines are allowed extras)
-    all_rewrite_ids = {rl["line_id"] for rl in evidence["rewrite_lines"]}
-    final_covered: Dict[str, List[str]] = {}
-    for item in plan.items:
-        for lid in (item.covered_line_ids or []):
-            final_covered.setdefault(lid, []).append(item.shot_id)
-
-    missing = all_rewrite_ids - set(final_covered)
-    dups = {lid: shots for lid, shots in final_covered.items() if len(shots) > 1 and lid in all_rewrite_ids}
-
-    post_errors: List[str] = []
-    if missing:
-        post_errors.append(f"{len(missing)} lines missing: {sorted(missing)[:10]}")
-    if dups:
-        post_errors.append(f"{len(dups)} lines duplicated")
-    if post_errors:
-        raise ValueError("Post-normalization coverage FAILED:\n" + "\n".join(post_errors))
-
-    # ── Final validation ──
-    validation_errors: List[str] = []
-    for item in plan.items:
-        validation_errors.extend(validate_timeline_item(item))
-    validation_errors.extend(validate_timeline_items(plan.items, video_duration))
-
-    blocking = [
-        e for e in validation_errors
-        if any(kw in e.lower() for kw in (
-            "overlap", "start_sec (", "missing start_sec", ">= end_sec",
-            "empty rewritten_prompt", "covered by both",
-            "gap at start", "gap at end", "empty shot_id", "invalid source",
-        ))
-    ]
-    if blocking:
-        raise ValueError(
-            f"Validation FAILED with {len(blocking)} blocking errors:\n"
-            + "\n".join(f"  - {e}" for e in blocking)
-        )
-    if validation_errors:
-        logger.warning("%d non-blocking warnings", len(validation_errors))
-
+    logger.info("Timeline plan: %d items (%d modified, %d original)",
+                len(plan.items),
+                sum(1 for i in plan.items if i.source == "modified"),
+                sum(1 for i in plan.items if i.source == "original"))
     return plan
 
 
