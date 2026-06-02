@@ -17,12 +17,14 @@ def get_llm_client() -> OpenAI | None:
     )
 
 
-def strip_markdown_fence(text: str) -> str:
+def strip_markdown_fence(text: str | None) -> str:
     """Strip markdown code fences from LLM response text."""
+    if not text:
+        return ""
     text = text.strip()
     if text.startswith("```"):
         lines = text.split("\n")
-        if lines[0].startswith("```"):
+        if lines and lines[0].startswith("```"):
             lines = lines[1:]
         if lines and lines[-1].strip() in ("```", "```json"):
             lines = lines[:-1]

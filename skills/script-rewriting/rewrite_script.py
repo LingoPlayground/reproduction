@@ -32,8 +32,8 @@ try:
     from shakespeare.engine import FullRewriter
     from shakespeare.verifier import QualityVerifier
 except ImportError as e:
-    print(f"❌ 无法导入 shakespeare 模块: {e}")
-    print(f"   请确认 ~/workspace/shakespeare/src 存在且可导入")
+    print(f"❌ Cannot import shakespeare module: {e}")
+    print(f"   Ensure ~/workspace/shakespeare/src exists and is importable")
     print(f"   PYTHONPATH={SHAKESPEARE_SRC}")
     sys.exit(1)
 
@@ -43,15 +43,15 @@ except ImportError as e:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Stage 2: CEFR 分级剧本改写"
+        description="Stage 2: CEFR-graded script rewriting"
     )
-    parser.add_argument("--script", required=True, help="Stage 1 产出的 ScriptInput JSON")
+    parser.add_argument("--script", required=True, help="Stage 1 ScriptInput JSON")
     parser.add_argument(
         "--levels", default="A2,B1,B2,C1",
-        help="目标 CEFR 等级，逗号分隔（默认: A2,B1,B2,C1）"
+        help="Target CEFR levels, comma-separated (default: A2,B1,B2,C1)"
     )
-    parser.add_argument("--output-dir", default=".", help="输出目录")
-    parser.add_argument("--output-prefix", default="rewrite", help="文件名前缀")
+    parser.add_argument("--output-dir", default=".", help="Output directory")
+    parser.add_argument("--output-prefix", default="rewrite", help="Output filename prefix")
     parser.add_argument("--temperature", type=float, default=0.3, help="LLM temperature")
     return parser.parse_args()
 
@@ -63,11 +63,11 @@ def parse_levels(levels_str: str) -> list[CEFRLevel]:
     for s in levels_str.split(","):
         s = s.strip().upper()
         if s not in valid:
-            print(f"⚠️  无效等级 '{s}'，跳过。有效值: {sorted(valid)}")
+            print(f"⚠️  Invalid level '{s}', skipping. Valid values: {sorted(valid)}")
             continue
         levels.append(CEFRLevel(s))
     if not levels:
-        sys.exit("❌ 无有效 CEFR 等级")
+        sys.exit("❌ No valid CEFR levels")
     return levels
 
 
@@ -131,14 +131,14 @@ async def main() -> None:
     # 1. Load input script
     script_path = Path(args.script).resolve()
     if not script_path.exists():
-        sys.exit(f"❌ 剧本文件不存在: {script_path}")
+        sys.exit(f"❌ Script file not found: {script_path}")
 
     with open(script_path, "r", encoding="utf-8") as f:
         script = ScriptInput(**json.load(f))
 
     dialogue_shots = [s for s in script.script.shots if s.lines]
     total_lines = sum(len(s.lines) for s in dialogue_shots)
-    print(f"📖 加载剧本: {script.script.title} — {total_lines} 行台词")
+    print(f"📖 Loaded script: {script.script.title} — {total_lines} lines")
 
     # 2. Build line context for backfill
     line_context = build_line_context(script)
@@ -150,13 +150,13 @@ async def main() -> None:
 
     # 3. Parse target levels
     levels = parse_levels(args.levels)
-    print(f"🎯 目标等级: {', '.join(l.value for l in levels)}")
+    print(f"🎯 Target levels: {', '.join(l.value for l in levels)}")
 
     # 4. Initialize shakespeare components
-    print("🔧 构建 CEFR 词汇索引...")
+    print("🔧 Building CEFR vocabulary index...")
     t0 = time.time()
     vocab = CEFRVocabIndex().build()
-    print(f"   完成 ({time.time() - t0:.1f}s)")
+    print(f"   Done ({time.time() - t0:.1f}s)")
 
     llm = LLMClient()
     rewriter = FullRewriter(llm, vocab)
@@ -170,7 +170,7 @@ async def main() -> None:
     prefix = args.output_prefix
     for target in levels:
         print(f"\n{'─'*50}")
-        print(f"🔄 改写 {target.value} 等级...")
+        print(f"🔄 Rewriting for {target.value}...")
         t_start = time.time()
 
         # Rewrite
@@ -195,7 +195,7 @@ async def main() -> None:
         print(f"   → {out_path}")
 
     print(f"\n{'='*50}")
-    print(f"🎉 全部改写完成！输出目录: {output_dir}")
+    print(f"🎉 All rewrites complete! Output directory: {output_dir}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
 """Integration test: full v4 pipeline from input -> TimelinePlan."""
 import json
 from unittest.mock import patch, MagicMock
-from skills.timeline_plan.models import CanvasNode, CutPoint, Stage3Input
+from skills.common.models import CutPoint
+from skills.timeline_plan.models import CanvasNode, Stage3Input
 from skills.timeline_plan.generate_plan import generate_timeline_plan
 
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+
 
 from skills.timeline_plan.models import (
     TimelinePlan, TimelinePlanItem, GenerationWindow,
@@ -28,7 +28,7 @@ def _carve_out(segments: list[tuple[float, float]], carve_start: float, carve_en
 
 def finalize_timeline_plan(
     windows: list[GenerationWindow],
-    shots: list[Any],
+    shots: list,
     video_duration: float,
     title: str,
     level: str,

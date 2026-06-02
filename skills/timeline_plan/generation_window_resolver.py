@@ -228,6 +228,28 @@ def resolve_generation_windows(
                     prev.end_sec = mid
                     w.start_sec = mid
                     resolved.append(w)
+                elif not prev_can_shrink and curr_can_shrink:
+                    merged_end = max(prev.end_sec, w.end_sec)
+                    if merged_end - w.start_sec <= max_duration_sec:
+                        w.start_sec = prev.start_sec
+                        w.atoms = prev.atoms + w.atoms
+                        w.degradation_level = max(prev.degradation_level, w.degradation_level)
+                        w.degradation_reason = f"merged_{prev.window_id}_into_{w.window_id}"
+                        resolved.pop()
+                        resolved.append(w)
+                    else:
+                        _mark_fallback(w, f"overlap_too_tight_with_{prev.window_id}")
+                        resolved.append(w)
+                elif prev_can_shrink and not curr_can_shrink:
+                    merged_end = max(prev.end_sec, w.end_sec)
+                    if merged_end - prev.start_sec <= max_duration_sec:
+                        prev.end_sec = merged_end
+                        prev.atoms.extend(w.atoms)
+                        prev.degradation_level = max(prev.degradation_level, w.degradation_level)
+                        prev.degradation_reason = f"merged_{w.window_id}_into_{prev.window_id}"
+                    else:
+                        _mark_fallback(w, f"overlap_too_tight_with_{prev.window_id}")
+                        resolved.append(w)
                 else:
                     _mark_fallback(w, f"overlap_too_tight_with_{prev.window_id}")
                     resolved.append(w)

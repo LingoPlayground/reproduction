@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
 
-from skills.timeline_plan.models import CutPoint, EditAtom, AtomLine, _normalize_text
+
+from skills.common.models import CutPoint
+from skills.timeline_plan.models import EditAtom, AtomLine, _normalize_text
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,7 @@ def _is_effectively_unchanged(original: str, rewritten: str) -> bool:
 
 
 def build_edit_atoms(
-    script_shots: list[Any],
+    script_shots: list,
     rewrite_lines: list[dict],
     scene_cuts: list[CutPoint],
     video_duration: float,

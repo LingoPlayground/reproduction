@@ -41,9 +41,9 @@ def _coarse_recall(
 ) -> dict[str, list[str]]:
     """Deterministic coarse recall: per-atom candidate nodes by keyword overlap.
     
-    Uses dialogue text and speaker name to find candidate nodes.
+    Uses dialogue text, speaker name, AND scene description to find candidate nodes.
+    Scene description is critical for matching short/ambiguous lines.
     Always returns at least min_candidates nodes per atom (if available).
-    Falls back to all nodes when no candidates found.
     """
     candidates: dict[str, list[str]] = {}
     
@@ -55,6 +55,11 @@ def _coarse_recall(
                 if len(w) > 1:
                     atom_words.add(w)
             atom_words.add(line.speaker.lower())
+        # Add scene description keywords for context-aware recall
+        for w in atom.scene_description.lower().split():
+            w = w.strip(".!?,;:\"'")
+            if len(w) > 2:
+                atom_words.add(w)
         
         if not atom_words:
             candidates[atom.atom_id] = [n.node_id for n in canvas_nodes[:10]]
@@ -70,12 +75,13 @@ def _coarse_recall(
         scored.sort(key=lambda x: -x[1])
         top = [nid for nid, _ in scored[:max(min_candidates, 3)]]
         
-        if len(top) < min_candidates:
-            # Pad with all nodes to ensure minimum recall
-            extra = [n.node_id for n in canvas_nodes if n.node_id not in top]
-            top.extend(extra[:min_candidates - len(top)])
+        if not top:
+            substantial = [n for n in canvas_nodes if len(n.prompt) > 300]
+            top = [n.node_id for n in substantial[:30]]
+            if not top:
+                top = [n.node_id for n in canvas_nodes[:30]]
         
-        candidates[atom.atom_id] = top if top else [n.node_id for n in canvas_nodes[:10]]
+        candidates[atom.atom_id] = top
     
     return candidates
 
@@ -114,17 +120,25 @@ def _build_matching_prompt(
     ], ensure_ascii=False, indent=2)
 
     nodes_json = json.dumps([
-        {"node_id": n.node_id, "prompt": n.prompt[:1200]}
+        {"node_id": n.node_id, "prompt": n.prompt[:800]}
         for n in canvas_nodes
     ], ensure_ascii=False, indent=2)
 
     return f"""## Role
-Match each Edit Atom to the canvas node prompt that best fits its
-dialogue + scene + character context.
+You must match each Edit Atom to the BEST canvas node using this priority:
 
-Canvas node prompts describe original video generation intent.
-Focus on matching spoken dialogue (exact or semantic) AND the
-scene/environment/action described.
+1. DIALOGUE MATCH (primary): Does the node's prompt contain the atom's dialogue
+   lines — exact text or semantic equivalent? Canvas prompts often embed the
+   original dialogue. Match on words, phrases, or meaning.
+
+2. SCENE DESCRIPTION MATCH (fallback): If no dialogue match, does the atom's
+   scene_description describe the same location, action, or visual setting
+   as the node's prompt?
+
+3. BEST-EFFORT MATCH (last resort): If neither works, pick the most contextually
+   relevant node — same characters, same episode theme, or similar setting.
+   Every atom MUST get a match. Do not leave any atom unmatched unless it is
+   genuinely impossible.
 
 ## Edit Atoms ({len(atoms)})
 ```json
@@ -137,32 +151,21 @@ scene/environment/action described.
 ```
 
 ## Rules
-- Each atom has a "candidates" list — hints from keyword overlap, not constraints.
-- Prefer dialogue match over scene keyword match.
-- If no node reasonably matches an atom, put it in unmatched.
-- Every atom must appear in either matches or unmatched.
-- Semantic similarity is acceptable when exact text differs.
-- Atoms from the same shot or consecutive shots with shared characters
-  often belong to the same canvas node. If dialogue + scene context
-  supports it, match them to the same node.
-- Group matched atoms into window drafts. A window draft contains atoms
-  that share one canvas node and one coherent prompt intent.
-- Each window_draft must reference only atom_ids matched to the same node_id.
-  Never include unmatched atoms in window_drafts.
+- Candidates list is a hint from keyword overlap — use it as guidance, not a hard limit.
+- For short lines ("no", "okay"): match using the surrounding scene context.
+- Group matched atoms into window drafts sharing one canvas node.
+- Return ONLY JSON in the format below.
 
 ## Output
-Return ONLY JSON:
 ```json
 {{
   "matches": [
     {{"atom_id": "A1", "node_id": "n1", "confidence": 0.9, "reasoning": "..."}}
   ],
   "window_drafts": [
-    {{"draft_id": "draft_001", "atom_ids": ["A1", "A2"], "node_id": "n1", "confidence": 0.9, "reasoning": "..."}}
+    {{"draft_id": "draft_001", "atom_ids": ["A1"], "node_id": "n1", "confidence": 0.9, "reasoning": "..."}}
   ],
-  "unmatched": [
-    {{"atom_id": "A2", "reason": "no canvas prompt matches this scene"}}
-  ]
+  "unmatched": []
 }}
 ```"""
 
@@ -289,7 +292,7 @@ def match_atoms_to_nodes(
             reasoning_effort="low",
             extra_body={"thinking": {"type": "enabled"}},
         )
-        text = resp.choices[0].message.content or ""
+        text = (resp.choices[0].message.content or "") if resp.choices else ""
         _log_llm(prompt, text, time.time() - t0)
     except Exception as e:
         logger.error("Segment matcher LLM call failed: %s", e)
