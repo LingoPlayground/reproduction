@@ -6,6 +6,9 @@ Algorithm:
 3. If found, use the detected point; otherwise keep the LLM boundary.
 4. Fill gaps between adjacent shots using intermediate cut points or extend.
 """
+# DEPRECATED in v4.0: boundary snapping logic migrated to edit_atom_builder.py.
+# determine_cut_points() still used by generate_plan.py for all-original fallback.
+
 from __future__ import annotations
 
 import logging

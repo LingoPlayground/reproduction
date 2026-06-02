@@ -10,6 +10,10 @@ or any semantic issue — the verifier should have caught it. Normalizer only:
 
 Fail fast: any semantic problem (overlap, >30s, unmatched) is a ValueError.
 """
+# DEPRECATED in v4.0: semantic patching replaced by window_resolver + prompt_rewriter;
+# pure geometry (_carve_out, _finalize) retained in plan_finalizer.py.
+# Kept for reference; will be removed in a future version.
+
 from __future__ import annotations
 
 import math

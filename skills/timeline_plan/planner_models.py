@@ -4,6 +4,9 @@ Stage A1 (Map): LLM maps each rewritten line to a canvas node (1-to-1).
   Code then deterministically groups by node + time proximity.
 Stage B (Rewrite): Per-group LLM rewrites the prompt.
 """
+# DEPRECATED in v4.0: replaced by models.py EditAtom and GenerationWindow.
+# Kept for reference; will be removed in a future version.
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
