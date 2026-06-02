@@ -25,8 +25,8 @@ class FakeScriptOutput:
 
 
 class TestV4Pipeline:
-    @patch("skills.timeline_plan.segment_matcher._get_client")
-    @patch("skills.timeline_plan.prompt_rewriter._get_client")
+    @patch("skills.timeline_plan.segment_matcher.get_llm_client")
+    @patch("skills.timeline_plan.prompt_rewriter.get_llm_client")
     def test_full_pipeline_single_rewritten_line(self, mock_rewrite_client, mock_match_client):
         """End-to-end: one line rewritten -> matched -> window -> prompt -> plan."""
         mock_match = MagicMock()

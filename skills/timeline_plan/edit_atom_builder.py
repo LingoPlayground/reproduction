@@ -5,19 +5,12 @@ import logging
 import re
 from typing import Any
 
-from skills.timeline_plan.models import CutPoint, EditAtom, AtomLine
+from skills.timeline_plan.models import CutPoint, EditAtom, AtomLine, _normalize_text
 
 logger = logging.getLogger(__name__)
 
 CLUSTER_GAP_SEC = 1.5
 SNAP_TOLERANCE_SEC = 0.5
-
-
-def _normalize_text(text: str) -> str:
-    text = text.strip().lower()
-    text = re.sub(r'\s+', ' ', text)
-    text = re.sub(r'[^\w\s]', '', text)
-    return text
 
 
 def _is_rewritten(original: str, rewritten: str) -> bool:
@@ -61,6 +54,23 @@ def _scene_similarity(desc_a: str, desc_b: str) -> bool:
     return ratio >= 0.45
 
 
+def _is_effectively_unchanged(original: str, rewritten: str) -> bool:
+    """Check if a rewrite is effectively unchanged (empty, same text, or short interjection)."""
+    if not rewritten or not rewritten.strip():
+        return True
+    norm_orig = re.sub(r'[^\w\s]', '', original.strip().lower())
+    norm_rew = re.sub(r'[^\w\s]', '', rewritten.strip().lower())
+    if norm_orig == norm_rew:
+        return True
+    short_words = {'what', 'huh', 'okay', 'ok', 'yeah', 'yes', 'no', 'hi', 'hey',
+                   'oh', 'uh', 'right', 'thanks', 'bye', 'stop', 'wait',
+                   'come in', 'good afternoon', 'good morning', 'good evening',
+                   'mmhmm', 'hmm'}
+    if norm_orig in short_words and norm_rew in short_words:
+        return True
+    return False
+
+
 def build_edit_atoms(
     script_shots: list[Any],
     rewrite_lines: list[dict],
@@ -70,27 +80,20 @@ def build_edit_atoms(
     if not rewrite_lines:
         return []
 
-    # Filter: lines that rewriter marked as changed but are effectively unchanged
-    # (short transition words, interjections, empty rewrites)
-    def _is_effectively_unchanged(original: str, rewritten: str) -> bool:
-        if not rewritten or not rewritten.strip():
-            return True  # empty rewrite → not actually changed
-        norm_orig = re.sub(r'[^\w\s]', '', original.strip().lower())
-        norm_rew = re.sub(r'[^\w\s]', '', rewritten.strip().lower())
-        if norm_orig == norm_rew:
-            return True
-        # Short interjections / transition words
-        short_words = {'what', 'huh', 'okay', 'ok', 'yeah', 'yes', 'no', 'hi', 'hey', 'oh', 'uh', 'right', 'thanks', 'bye', 'stop', 'wait', 'come in', 'good afternoon', 'good morning', 'good evening', 'mmhmm', 'hmm'}
-        if norm_orig in short_words and norm_rew in short_words:
-            return True
-        return False
-    
-    # Reset rewritten to original for effectively unchanged lines
+    # Build working copies so we never mutate caller data
+    working_lines: list[dict] = []
     for rl in rewrite_lines:
         orig = str(rl.get("original", ""))
-        rew = str(rl.get("rewritten", ""))
+        rew_raw = rl.get("rewritten")
+        rew = str(rew_raw) if rew_raw is not None else ""
+        
         if _is_effectively_unchanged(orig, rew):
-            rl["rewritten"] = orig
+            working_lines.append({**rl, "rewritten": orig})
+        else:
+            working_lines.append(dict(rl))
+    
+    # Use working_lines instead of rewrite_lines from here on
+    rewrite_lines = working_lines
 
     lines_by_shot: dict[int, list[dict]] = {}
     for rl in rewrite_lines:

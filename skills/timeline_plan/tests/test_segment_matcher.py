@@ -87,7 +87,7 @@ class TestParseMatchResponse:
 
 
 class TestMatchAtomsToNodes:
-    @patch("skills.timeline_plan.segment_matcher._get_client")
+    @patch("skills.timeline_plan.segment_matcher.get_llm_client")
     def test_populates_matched_node(self, mock_get_client):
         mock_client = MagicMock()
         mock_resp = MagicMock()
@@ -110,7 +110,7 @@ class TestMatchAtomsToNodes:
         assert isinstance(drafts[0], WindowPlanDraft)
         assert drafts[0].atom_ids == ["A1"]
 
-    @patch("skills.timeline_plan.segment_matcher._get_client")
+    @patch("skills.timeline_plan.segment_matcher.get_llm_client")
     def test_unmatched_atom_stays_none(self, mock_get_client):
         mock_client = MagicMock()
         mock_resp = MagicMock()
@@ -131,7 +131,7 @@ class TestMatchAtomsToNodes:
         assert match_atoms_to_nodes([], [_make_node("n1", "test")]) == []
         # should not raise
 
-    @patch("skills.timeline_plan.segment_matcher._get_client")
+    @patch("skills.timeline_plan.segment_matcher.get_llm_client")
     def test_missing_window_drafts_falls_back_to_single_atom_drafts(self, mock_get_client):
         mock_client = MagicMock()
         mock_resp = MagicMock()
@@ -150,7 +150,7 @@ class TestMatchAtomsToNodes:
         assert drafts[0].atom_ids == ["A1"]
         assert drafts[0].node_id == "n1"
 
-    @patch("skills.timeline_plan.segment_matcher._get_client")
+    @patch("skills.timeline_plan.segment_matcher.get_llm_client")
     def test_window_drafts_must_match_atom_node(self, mock_get_client):
         mock_client = MagicMock()
         mock_resp = MagicMock()

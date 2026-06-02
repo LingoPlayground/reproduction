@@ -57,7 +57,7 @@ class TestCheckRewrittenPrompt:
 
 
 class TestRewritePromptsForWindows:
-    @patch("skills.timeline_plan.prompt_rewriter._get_client")
+    @patch("skills.timeline_plan.prompt_rewriter.get_llm_client")
     def test_sets_rewritten_prompt(self, mock_get_client):
         mock_client = MagicMock()
         mock_resp = MagicMock()
@@ -79,7 +79,7 @@ class TestRewritePromptsForWindows:
     def test_empty_windows_noop(self):
         rewrite_prompts_for_windows([], [], "B2")
 
-    @patch("skills.timeline_plan.prompt_rewriter._get_client")
+    @patch("skills.timeline_plan.prompt_rewriter.get_llm_client")
     def test_degraded_fallback_window_skips_llm(self, mock_get_client):
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client

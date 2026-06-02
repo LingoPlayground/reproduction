@@ -9,23 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from skills.timeline_plan.models import EditAtom, CanvasNode, WindowPlanDraft
+from skills.timeline_plan._llm_utils import get_llm_client, _DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = os.environ.get("LLM_PLANNER_MODEL", "deepseek-v4-pro")
 _LOG_DIR = Path("runs/v4_plans/matcher_logs")
 _log_counter = 0
-
-
-def _get_client():
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if not api_key:
-        return None
-    from openai import OpenAI
-    return OpenAI(
-        api_key=api_key,
-        base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
-    )
 
 
 def _log_llm(prompt: str, resp: str, dur: float):
@@ -244,6 +233,8 @@ def _coerce_window_drafts(raw_drafts: list[dict], atoms: list[EditAtom]) -> list
             if not atom or atom_id in used:
                 continue
             if node_id and atom.matched_node_id != node_id:
+                logger.debug("Draft %s: atom %s matched to %s, but draft claims %s — skipping",
+                            raw.get("draft_id", "?"), atom_id, atom.matched_node_id, node_id)
                 continue
             atom_ids.append(atom_id)
         if not atom_ids:
@@ -283,7 +274,7 @@ def match_atoms_to_nodes(
     atom_candidates = _coarse_recall(atoms, canvas_nodes)
     candidate_nodes = _filter_canvas_nodes(atom_candidates, canvas_nodes)
 
-    client = _get_client()
+    client = get_llm_client()
     if not client:
         logger.warning("No LLM client available")
         return []

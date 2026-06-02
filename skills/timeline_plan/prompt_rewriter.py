@@ -9,20 +9,12 @@ import time
 from pathlib import Path
 
 from skills.timeline_plan.models import GenerationWindow, CanvasNode
+from skills.timeline_plan._llm_utils import get_llm_client, _DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_MODEL = os.environ.get("LLM_PLANNER_MODEL", "deepseek-v4-pro")
 _LOG_DIR = Path("runs/v4_plans/rewriter_logs")
 _log_counter = 0
-
-
-def _get_client():
-    api_key = os.environ.get("DEEPSEEK_API_KEY", "")
-    if not api_key:
-        return None
-    from openai import OpenAI
-    return OpenAI(api_key=api_key, base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"))
 
 
 def _log_llm(window_id: str, prompt: str, resp: str, dur: float):
@@ -91,7 +83,7 @@ def rewrite_prompts_for_windows(
 ) -> None:
     if not windows:
         return
-    client = _get_client()
+    client = get_llm_client()
     if not client:
         logger.warning("No LLM client available — skipping prompt rewrite")
         return
