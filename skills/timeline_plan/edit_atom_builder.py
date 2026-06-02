@@ -55,7 +55,13 @@ def _scene_similarity(desc_a: str, desc_b: str) -> bool:
 
 
 def _is_effectively_unchanged(original: str, rewritten: str) -> bool:
-    """Check if a rewrite is effectively unchanged (empty, same text, or short interjection)."""
+    """Check if a rewrite is effectively unchanged.
+
+    More aggressive than AtomLine.is_rewritten — catches empty rewrites
+    and short interjections that differ textually but carry no semantic change.
+    When this returns True, the line's rewritten field is reset to original
+    so no EditAtom is created for it.
+    """
     if not rewritten or not rewritten.strip():
         return True
     norm_orig = re.sub(r'[^\w\s]', '', original.strip().lower())

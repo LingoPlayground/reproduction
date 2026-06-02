@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -15,13 +16,16 @@ logger = logging.getLogger(__name__)
 
 _LOG_DIR = Path("runs/v4_plans/matcher_logs")
 _log_counter = 0
+_log_lock = threading.Lock()
 
 
 def _log_llm(prompt: str, resp: str, dur: float):
     global _log_counter
-    _log_counter += 1
+    with _log_lock:
+        _log_counter += 1
+        counter = _log_counter
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    fpath = _LOG_DIR / f"{_log_counter:03d}_matcher_{time.strftime('%H%M%S')}.json"
+    fpath = _LOG_DIR / f"{counter:03d}_matcher_{time.strftime('%H%M%S')}.json"
     with open(fpath, "w") as f:
         json.dump({
             "prompt_chars": len(prompt), "response_chars": len(resp),

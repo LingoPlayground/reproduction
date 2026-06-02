@@ -5,6 +5,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -15,13 +16,16 @@ logger = logging.getLogger(__name__)
 
 _LOG_DIR = Path("runs/v4_plans/rewriter_logs")
 _log_counter = 0
+_log_lock = threading.Lock()
 
 
 def _log_llm(window_id: str, prompt: str, resp: str, dur: float):
     global _log_counter
-    _log_counter += 1
+    with _log_lock:
+        _log_counter += 1
+        counter = _log_counter
     _LOG_DIR.mkdir(parents=True, exist_ok=True)
-    fpath = _LOG_DIR / f"{_log_counter:03d}_rewrite_{window_id}_{time.strftime('%H%M%S')}.json"
+    fpath = _LOG_DIR / f"{counter:03d}_rewrite_{window_id}_{time.strftime('%H%M%S')}.json"
     with open(fpath, "w") as f:
         json.dump({"window_id": window_id, "duration_sec": round(dur, 1),
                     "prompt_chars": len(prompt), "response_chars": len(resp),
