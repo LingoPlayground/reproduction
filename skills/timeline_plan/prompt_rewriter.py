@@ -114,7 +114,9 @@ def rewrite_prompts_for_windows(
                     temperature=0.3, max_tokens=32768,
                     reasoning_effort="low", extra_body={"thinking": {"type": "enabled"}},
                 )
-                text = strip_markdown_fence(resp.choices[0].message.content or "")
+                text = strip_markdown_fence(
+                    (resp.choices[0].message.content or "") if resp.choices else ""
+                )
                 _log_llm(window.window_id, ri_prompt, text, time.time() - t0)
             except Exception as e:
                 logger.warning("Rewrite %s attempt %d failed: %s", window.window_id, attempt + 1, e)

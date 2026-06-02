@@ -8,14 +8,14 @@ Provides:
 from __future__ import annotations
 
 import os
-from typing import List
 
-from skills.timeline_plan.models import CutPoint
+
+from skills.common.models import CutPoint
 
 
 def detect_scene_boundaries(
     video_path: str, threshold: float = 20.0
-) -> List[CutPoint]:
+) -> list[CutPoint]:
     """Detect shot boundaries in a video using PySceneDetect.
 
     Uses ContentDetector (HSV color histogram differences) for cut detection.
@@ -49,7 +49,7 @@ def detect_scene_boundaries(
 
 def detect_node_internal_cuts(
     video_path: str, threshold: float = 20.0
-) -> List[CutPoint]:
+) -> list[CutPoint]:
     """Detect internal shot boundaries within a canvas node video.
 
     Useful for multi-shot canvas nodes where one node's prompt covers

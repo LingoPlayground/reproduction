@@ -1,5 +1,6 @@
 """Tests for edit_atom_builder.py — Stage 3 v4 atom construction."""
-from skills.timeline_plan.models import CutPoint, EditAtom, AtomLine
+from skills.common.models import CutPoint
+from skills.timeline_plan.models import EditAtom, AtomLine
 from skills.timeline_plan.edit_atom_builder import build_edit_atoms
 
 

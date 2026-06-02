@@ -10,12 +10,12 @@ import shutil
 import subprocess
 import sys
 import time
-import tempfile
+
 import urllib.request
 import urllib.error
-import uuid
+
 from pathlib import Path
-from typing import List, Optional
+
 
 WORK_DIR = Path(__file__).resolve().parents[2] / "generated"
 
@@ -86,7 +86,7 @@ def normalize_audio_loudness(input_path: str, output_path: str) -> None:
     ], capture_output=True, check=True)
 
 
-def _write_concat_file(segment_paths: List[str], concat_path: str) -> str:
+def _write_concat_file(segment_paths: list[str], concat_path: str) -> str:
     """Write ffmpeg concat file listing all segments (absolute paths)."""
     with open(concat_path, "w") as f:
         for p in segment_paths:
@@ -105,7 +105,7 @@ def _probe_duration(video_path: str) -> float:
     return float(info.get("format", {}).get("duration", 0.0))
 
 
-def _extract_asset_id(asset_result: dict) -> Optional[str]:
+def _extract_asset_id(asset_result: dict) -> str | None:
     data = asset_result.get("data", {})
     if isinstance(data, dict):
         raw = data.get("id")
@@ -254,8 +254,8 @@ async def assemble_video(
     work_dir = out_dir / "segments"
     work_dir.mkdir(exist_ok=True)
 
-    segment_paths: List[str] = []
-    fallback_report: List[dict] = []
+    segment_paths: list[str] = []
+    fallback_report: list[dict] = []
 
     for idx, item in enumerate(items):
         source = item.get("source", "original")
@@ -353,7 +353,7 @@ async def assemble_video(
 
     # Normalize encoding + audio
     print(f"\n  Normalizing {len(segment_paths)} segments...")
-    normalized_paths: List[str] = []
+    normalized_paths: list[str] = []
     for idx, sp in enumerate(segment_paths):
         np_path = str(work_dir / f"norm_{idx:03d}.mp4")
         normalize_segment_encoding(sp, np_path)

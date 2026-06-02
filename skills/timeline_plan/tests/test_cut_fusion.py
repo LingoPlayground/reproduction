@@ -1,8 +1,6 @@
 """Tests for cut point fusion algorithm."""
-from skills.timeline_plan.models import CutPoint
-from skills.timeline_plan.cut_fusion import (
-    find_nearest_cut, fuse_cut_boundary, determine_cut_points,
-)
+from skills.common.models import CutPoint
+from skills.timeline_plan.cut_fusion import find_nearest_cut, determine_cut_points
 
 
 class FakeShot:
@@ -38,22 +36,6 @@ class TestFindNearestCut:
     def test_empty_cuts(self):
         result = find_nearest_cut([], 5.0, tolerance=0.5)
         assert result is None
-
-
-class TestFuseCutBoundary:
-    def test_llm_only_no_nearby_cut(self):
-        shot = FakeShot(10.0, 20.0)
-        cuts = [CutPoint(5.0), CutPoint(25.0)]
-        start, end = fuse_cut_boundary(shot, cuts, tolerance=0.5)
-        assert start == 10.0
-        assert end == 20.0
-
-    def test_scenedetect_refines_both(self):
-        shot = FakeShot(10.0, 20.0)
-        cuts = [CutPoint(10.1), CutPoint(19.8)]
-        start, end = fuse_cut_boundary(shot, cuts, tolerance=0.5)
-        assert start == 10.1
-        assert end == 19.8
 
 
 class TestDetermineCutPoints:

@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Stage 3: Timeline plan generator — LLM-first pipeline.
+"""Stage 3: Timeline plan generator — deterministic pipeline.
 
-v3.0: Evidence Builder → LLM Planner (single-pass) → Verifier →
-Timeline Normalizer (pure geometry). LLM handles all semantics.
-Deterministic code handles only validation and geometry.
+v4.0: Edit Atom Builder → Segment Matcher → Generation Window Resolver →
+Prompt Rewriter → Plan Finalizer. LLM handles matching + prompt rewriting;
+deterministic code handles atom construction, window resolution,
+validation, and timeline geometry.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 from dataclasses import asdict
-from typing import Dict, List
+import logging
+from pathlib import Path
 
+from skills.common.models import CutPoint
 from skills.timeline_plan.models import (
-    TimelinePlan, TimelinePlanItem, CanvasNode, CutPoint, Stage3Input,
+    TimelinePlan, TimelinePlanItem, CanvasNode, Stage3Input,
     AtomLine,
 )
 from skills.timeline_plan.edit_atom_builder import build_edit_atoms
@@ -22,7 +25,6 @@ from skills.timeline_plan.generation_window_resolver import resolve_generation_w
 from skills.timeline_plan.prompt_rewriter import rewrite_prompts_for_windows
 from skills.timeline_plan.plan_finalizer import finalize_timeline_plan
 from skills.timeline_plan.cut_fusion import determine_cut_points
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +163,7 @@ def main():
     with open(args.rewrite, encoding="utf-8") as f:
         rewrite_data = json.load(f)
 
-    canvas_nodes: List[CanvasNode] = []
+    canvas_nodes: list[CanvasNode] = []
     if args.canvas and Path(args.canvas).exists():
         with open(args.canvas, encoding="utf-8") as f:
             for n in json.load(f):
@@ -172,7 +174,7 @@ def main():
                     reference_images=n.get("reference_images") or n.get("data_obj", {}).get("images", []),
                 ))
 
-    cuts: List[CutPoint] = []
+    cuts: list[CutPoint] = []
     if args.cuts and Path(args.cuts).exists():
         with open(args.cuts, encoding="utf-8") as f:
             cuts = [CutPoint(time_sec=c["time_sec"]) for c in json.load(f)]

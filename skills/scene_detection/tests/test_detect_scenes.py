@@ -3,7 +3,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from skills.timeline_plan.models import CutPoint
+from skills.common.models import CutPoint
 from skills.scene_detection.detect_scenes import detect_scene_boundaries
 
 

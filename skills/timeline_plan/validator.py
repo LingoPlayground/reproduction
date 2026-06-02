@@ -9,8 +9,7 @@ L5: LLM-Judge     — semantic consistency of rewritten prompt vs original
 from __future__ import annotations
 
 import os
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 
 # ── Style anchors ────────────────────────────────────────────────────
@@ -27,7 +26,7 @@ _STYLE_ANCHORS_EN = [
 ]
 
 
-def extract_style_anchors(prompt: str) -> List[str]:
+def extract_style_anchors(prompt: str) -> list[str]:
     anchors = []
     prompt_lower = prompt.lower()
     for kw in _STYLE_ANCHORS_CN + _STYLE_ANCHORS_EN:
@@ -52,7 +51,7 @@ def validate_style_preservation(
 
 # ── L1: Structural validation ────────────────────────────────────────
 
-def validate_timeline_item(item: Any) -> List[str]:
+def validate_timeline_item(item: Any) -> list[str]:
     errors = []
     if not getattr(item, "shot_id", ""):
         errors.append(f"Item has empty shot_id")
@@ -73,7 +72,7 @@ def validate_timeline_item(item: Any) -> List[str]:
 
 # ── L2: Cross-item validation ────────────────────────────────────────
 
-def validate_timeline_items(items: List[Any], video_duration: float = 0.0) -> List[str]:
+def validate_timeline_items(items: list[Any], video_duration: float = 0.0) -> list[str]:
     errors = []
     sorted_items = sorted(items, key=lambda i: getattr(i, "start_sec", 0.0))
 
@@ -88,8 +87,8 @@ def validate_timeline_items(items: List[Any], video_duration: float = 0.0) -> Li
             )
 
     # Check for duplicate line coverage (allow split seedance segments: same node = same source)
-    seen_lines: Dict[str, str] = {}
-    seen_nodes: Dict[str, str] = {}
+    seen_lines: dict[str, str] = {}
+    seen_nodes: dict[str, str] = {}
     for item in items:
         node = getattr(item, "matched_node_id", None)
         for lid in getattr(item, "covered_line_ids", []) or []:
@@ -120,9 +119,9 @@ def validate_timeline_items(items: List[Any], video_duration: float = 0.0) -> Li
 def llm_judge_prompt_quality(
     original_prompt: str,
     rewritten_prompt: str,
-    dialogue_lines: List[Dict],
+    dialogue_lines: list[dict],
     scene_description: str = "",
-) -> Optional[Dict]:
+) -> dict | None:
     api_key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not api_key or not original_prompt or not rewritten_prompt:
         return None
