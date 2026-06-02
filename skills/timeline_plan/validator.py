@@ -165,7 +165,7 @@ JSON only: {"dialogue_accuracy": N, "style_preservation": N, "scene_coherence": 
             temperature=0.0,
             max_tokens=1024,
         )
-        text = resp.choices[0].message.content or ""
+        text = (resp.choices[0].message.content or "") if resp.choices else ""
         return _j.loads(text.strip().removeprefix("```json").removesuffix("```").strip())
     except Exception:
         return None

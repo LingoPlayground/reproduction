@@ -9,9 +9,8 @@ validation, and timeline geometry.
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from dataclasses import asdict
 import logging
+from dataclasses import asdict
 from pathlib import Path
 
 from skills.common.models import CutPoint
