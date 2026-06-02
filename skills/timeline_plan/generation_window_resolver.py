@@ -82,9 +82,14 @@ def _group_atoms_from_drafts(
         group: list[EditAtom] = []
         for aid in draft.atom_ids:
             if aid not in atom_map:
+                logger.warning(
+                    "Draft %s references unknown atom %s — skipping", draft.draft_id, aid
+                )
                 continue
             if aid in used:
-                logger.debug("Atom %s appears in multiple window drafts; keeping first draft", aid)
+                logger.debug(
+                    "Draft %s: atom %s already used — skipping", draft.draft_id, aid
+                )
                 continue
             group.append(atom_map[aid])
         if not group:

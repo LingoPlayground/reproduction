@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 from skills.timeline_plan.models import GenerationWindow, CanvasNode
-from skills.timeline_plan._llm_utils import get_llm_client, _DEFAULT_MODEL
+from skills.timeline_plan._llm_utils import get_llm_client, _DEFAULT_MODEL, strip_markdown_fence
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +114,7 @@ def rewrite_prompts_for_windows(
                     temperature=0.3, max_tokens=32768,
                     reasoning_effort="low", extra_body={"thinking": {"type": "enabled"}},
                 )
-                text = (resp.choices[0].message.content or "").strip()
-                if text.startswith("```"):
-                    ls = text.split("\n")
-                    if ls[0].startswith("```"): ls = ls[1:]
-                    if ls and ls[-1].strip() in ("```", "```json"): ls = ls[:-1]
-                    text = "\n".join(ls).strip()
+                text = strip_markdown_fence(resp.choices[0].message.content or "")
                 _log_llm(window.window_id, ri_prompt, text, time.time() - t0)
             except Exception as e:
                 logger.warning("Rewrite %s attempt %d failed: %s", window.window_id, attempt + 1, e)

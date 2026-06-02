@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from skills.timeline_plan.models import EditAtom, CanvasNode, WindowPlanDraft
-from skills.timeline_plan._llm_utils import get_llm_client, _DEFAULT_MODEL
+from skills.timeline_plan._llm_utils import get_llm_client, _DEFAULT_MODEL, strip_markdown_fence
 
 logger = logging.getLogger(__name__)
 
@@ -170,14 +170,7 @@ Return ONLY JSON:
 def _parse_match_response(text: str) -> tuple[list[dict], list[dict], list[dict]]:
     if not text or not text.strip():
         return [], [], []
-    t = text.strip()
-    if t.startswith("```"):
-        ls = t.split("\n")
-        if ls[0].startswith("```"):
-            ls = ls[1:]
-        if ls and ls[-1].strip() in ("```", "```json"):
-            ls = ls[:-1]
-        t = "\n".join(ls).strip()
+    t = strip_markdown_fence(text)
     try:
         data = json.loads(t)
     except json.JSONDecodeError:

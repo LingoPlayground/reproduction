@@ -15,3 +15,16 @@ def get_llm_client() -> OpenAI | None:
         api_key=api_key,
         base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
     )
+
+
+def strip_markdown_fence(text: str) -> str:
+    """Strip markdown code fences from LLM response text."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() in ("```", "```json"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
