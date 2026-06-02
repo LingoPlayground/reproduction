@@ -144,17 +144,18 @@ scene/environment/action described.
 ```
 
 ## Rules
-- Each atom has a "candidates" list of suggested canvas nodes from keyword matching.
-  These are hints — you may match to any node, not just candidates.
+- Each atom has a "candidates" list — hints from keyword overlap, not constraints.
 - Prefer dialogue match over scene keyword match.
 - If no node reasonably matches an atom, put it in unmatched.
 - Every atom must appear in either matches or unmatched.
 - Semantic similarity is acceptable when exact text differs.
-- Also group matched atoms into generation window drafts. A window draft
-  should contain atoms that belong to one coherent prompt intent and one
-  canvas node. Do not group different node intents together.
-- Each window_draft must reference only atom_ids that are matched to the same
-  node_id in matches. Never include unmatched atoms in window_drafts.
+- Atoms from the same shot or consecutive shots with shared characters
+  often belong to the same canvas node. If dialogue + scene context
+  supports it, match them to the same node.
+- Group matched atoms into window drafts. A window draft contains atoms
+  that share one canvas node and one coherent prompt intent.
+- Each window_draft must reference only atom_ids matched to the same node_id.
+  Never include unmatched atoms in window_drafts.
 
 ## Output
 Return ONLY JSON:
@@ -270,33 +271,6 @@ def _coerce_window_drafts(raw_drafts: list[dict], atoms: list[EditAtom]) -> list
     return drafts
 
 
-def _propagate_adjacent_matches(atoms: list[EditAtom]) -> None:
-    """If an unmatched atom is adjacent to matched atoms sharing a node, propagate."""
-    sorted_atoms = sorted(atoms, key=lambda a: (a.primary_shot_number, a.start_sec))
-    
-    for i, atom in enumerate(sorted_atoms):
-        if atom.matched_node_id:
-            continue
-        # Check previous and next atoms
-        for neighbor_idx in [i-1, i+1]:
-            if 0 <= neighbor_idx < len(sorted_atoms):
-                neighbor = sorted_atoms[neighbor_idx]
-                if neighbor.matched_node_id:
-                    # Check if same shot or consecutive shots with shared speakers
-                    same_shot = atom.primary_shot_number == neighbor.primary_shot_number
-                    consecutive_shot = abs(atom.primary_shot_number - neighbor.primary_shot_number) == 1
-                    
-                    atom_speakers = {l.speaker for l in atom.rewritten_lines}
-                    neighbor_speakers = {l.speaker for l in neighbor.rewritten_lines}
-                    shared_speakers = bool(atom_speakers & neighbor_speakers)
-                    
-                    if same_shot or (consecutive_shot and shared_speakers):
-                        atom.matched_node_id = neighbor.matched_node_id
-                        atom.match_confidence = neighbor.match_confidence * 0.7 if neighbor.match_confidence else 0.5
-                        atom.match_reasoning = f"propagated_from_{neighbor.atom_id}_adjacent_match"
-                        break
-
-
 def match_atoms_to_nodes(
     atoms: list[EditAtom],
     canvas_nodes: list[CanvasNode],
@@ -348,8 +322,6 @@ def match_atoms_to_nodes(
             logger.warning("Atom %s missing from LLM response", atom.atom_id)
 
     # Post-processing: propagate matches to adjacent unmatched atoms
-    _propagate_adjacent_matches(atoms)
-
     matched_count = sum(1 for a in atoms if a.matched_node_id)
     drafts = _coerce_window_drafts(raw_drafts, atoms)
     if not drafts:

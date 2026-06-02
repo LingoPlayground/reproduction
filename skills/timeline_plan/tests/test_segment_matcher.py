@@ -184,20 +184,6 @@ class TestCoarseRecall:
         result = _coarse_recall([atom], nodes)
         assert "n1" in result.get("A1", [])
 
-    def test_propagate_adjacent_matches(self):
-        from skills.timeline_plan.segment_matcher import _propagate_adjacent_matches
-        a1 = _make_atom("A1", [_make_line("L1", "contract is a trick", "rewrite")], primary_shot=4)
-        a1.matched_node_id = "n1"
-        a2 = _make_atom("A2", [_make_line("L2", "What?", "rewrite")], primary_shot=4)  # same shot
-        a3 = _make_atom("A3", [_make_line("L3", "call them", "rewrite", speaker="Ben")], primary_shot=5)
-        a3.matched_node_id = "n1"
-        a4 = _make_atom("A4", [_make_line("L4", "look at the numbers", "rewrite", speaker="Ben")], primary_shot=5)
-        # a2 and a4 are unmatched
-        atoms = [a1, a2, a3, a4]
-        _propagate_adjacent_matches(atoms)
-        assert a2.matched_node_id == "n1"  # same shot as a1, should propagate
-        assert a4.matched_node_id == "n1"  # same shot as a3, shared speaker
-
 
 if __name__ == "__main__":
     import sys
