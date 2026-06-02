@@ -70,6 +70,28 @@ def build_edit_atoms(
     if not rewrite_lines:
         return []
 
+    # Filter: lines that rewriter marked as changed but are effectively unchanged
+    # (short transition words, interjections, empty rewrites)
+    def _is_effectively_unchanged(original: str, rewritten: str) -> bool:
+        if not rewritten or not rewritten.strip():
+            return True  # empty rewrite → not actually changed
+        norm_orig = re.sub(r'[^\w\s]', '', original.strip().lower())
+        norm_rew = re.sub(r'[^\w\s]', '', rewritten.strip().lower())
+        if norm_orig == norm_rew:
+            return True
+        # Short interjections / transition words
+        short_words = {'what', 'huh', 'okay', 'ok', 'yeah', 'yes', 'no', 'hi', 'hey', 'oh', 'uh', 'right', 'thanks', 'bye', 'stop', 'wait', 'come in', 'good afternoon', 'good morning', 'good evening', 'mmhmm', 'hmm'}
+        if norm_orig in short_words and norm_rew in short_words:
+            return True
+        return False
+    
+    # Reset rewritten to original for effectively unchanged lines
+    for rl in rewrite_lines:
+        orig = str(rl.get("original", ""))
+        rew = str(rl.get("rewritten", ""))
+        if _is_effectively_unchanged(orig, rew):
+            rl["rewritten"] = orig
+
     lines_by_shot: dict[int, list[dict]] = {}
     for rl in rewrite_lines:
         sn = int(rl.get("shot_number", 0))
@@ -159,13 +181,23 @@ def build_edit_atoms(
         prev = merged_atoms[-1]
         gap = a.start_sec - prev.end_sec
         same_scene = _scene_similarity(prev.scene_description, a.scene_description)
-        if gap <= 1.0 and same_scene and prev.primary_shot_number != a.primary_shot_number:
-            # Merge into previous atom
-            prev.end_sec = max(prev.end_sec, a.end_sec)
-            prev.lines.extend(a.lines)
-            prev.shot_numbers = sorted(set(prev.shot_numbers + a.shot_numbers))
-            prev.boundary_reason = "cross_shot_merge"
-            prev.source_cut_times = sorted(set(prev.source_cut_times + a.source_cut_times))
+        
+        # Check speaker continuity
+        prev_speakers = {l.speaker for l in prev.lines}
+        curr_speakers = {l.speaker for l in a.lines}
+        shared_speakers = bool(prev_speakers & curr_speakers)
+        
+        if gap <= 1.0 and prev.primary_shot_number != a.primary_shot_number:
+            # Merge conditions: scene similarity OR speaker continuity
+            should_merge = same_scene or (shared_speakers and gap <= 0.7)
+            if should_merge:
+                prev.end_sec = max(prev.end_sec, a.end_sec)
+                prev.lines.extend(a.lines)
+                prev.shot_numbers = sorted(set(prev.shot_numbers + a.shot_numbers))
+                prev.boundary_reason = "cross_shot_merge_speaker" if shared_speakers and not same_scene else "cross_shot_merge"
+                prev.source_cut_times = sorted(set(prev.source_cut_times + a.source_cut_times))
+            else:
+                merged_atoms.append(a)
         else:
             merged_atoms.append(a)
     atoms = merged_atoms

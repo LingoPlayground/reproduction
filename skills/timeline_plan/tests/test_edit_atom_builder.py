@@ -60,8 +60,8 @@ class TestBuildEditAtoms:
 
     def test_different_shots_split_atoms(self):
         rls = [
-            _make_rl("L1", "a", "b", start_sec=1.0, end_sec=2.0, shot_number=1),
-            _make_rl("L2", "c", "d", start_sec=2.5, end_sec=3.5, shot_number=2),
+            _make_rl("L1", "a", "b", start_sec=1.0, end_sec=2.0, shot_number=1, speaker="Mia"),
+            _make_rl("L2", "c", "d", start_sec=2.5, end_sec=3.5, shot_number=2, speaker="Ben"),
         ]
         shots = [
             FakeShot(1, 0.0, 3.0, "kitchen"),
@@ -151,8 +151,8 @@ class TestBuildEditAtoms:
 
     def test_cross_shot_no_merge_different_scene(self):
         rls = [
-            _make_rl("L1", "a", "b", start_sec=1.0, end_sec=2.0, shot_number=1, shot_scene="kitchen"),
-            _make_rl("L2", "c", "d", start_sec=2.5, end_sec=3.5, shot_number=2, shot_scene="classroom"),
+            _make_rl("L1", "a", "b", start_sec=1.0, end_sec=2.0, shot_number=1, shot_scene="kitchen", speaker="Mia"),
+            _make_rl("L2", "c", "d", start_sec=2.5, end_sec=3.5, shot_number=2, shot_scene="classroom", speaker="Ben"),
         ]
         shots = [
             FakeShot(1, 0.0, 2.5, "kitchen scene"),

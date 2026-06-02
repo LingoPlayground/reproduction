@@ -41,9 +41,68 @@ def _log_llm(prompt: str, resp: str, dur: float):
         }, f, ensure_ascii=False, indent=2)
 
 
+def _coarse_recall(
+    atoms: list[EditAtom],
+    canvas_nodes: list[CanvasNode],
+    min_candidates: int = 3,
+) -> dict[str, list[str]]:
+    """Deterministic coarse recall: per-atom candidate nodes by keyword overlap.
+    
+    Uses dialogue text and speaker name to find candidate nodes.
+    Always returns at least min_candidates nodes per atom (if available).
+    Falls back to all nodes when no candidates found.
+    """
+    candidates: dict[str, list[str]] = {}
+    
+    for atom in atoms:
+        atom_words = set()
+        for line in atom.rewritten_lines:
+            for w in line.original.lower().split():
+                w = w.strip(".!?,;:\"'")
+                if len(w) > 1:
+                    atom_words.add(w)
+            atom_words.add(line.speaker.lower())
+        
+        if not atom_words:
+            candidates[atom.atom_id] = [n.node_id for n in canvas_nodes[:10]]
+            continue
+        
+        scored = []
+        for node in canvas_nodes:
+            prompt_lower = node.prompt.lower()
+            score = sum(1 for w in atom_words if w in prompt_lower)
+            if score > 0:
+                scored.append((node.node_id, score))
+        
+        scored.sort(key=lambda x: -x[1])
+        top = [nid for nid, _ in scored[:max(min_candidates, 3)]]
+        
+        if len(top) < min_candidates:
+            # Pad with all nodes to ensure minimum recall
+            extra = [n.node_id for n in canvas_nodes if n.node_id not in top]
+            top.extend(extra[:min_candidates - len(top)])
+        
+        candidates[atom.atom_id] = top if top else [n.node_id for n in canvas_nodes[:10]]
+    
+    return candidates
+
+
+def _filter_canvas_nodes(
+    candidates: dict[str, list[str]],
+    canvas_nodes: list[CanvasNode],
+) -> list[CanvasNode]:
+    """Filter canvas nodes to only those that appear in candidate lists."""
+    node_map = {n.node_id: n for n in canvas_nodes}
+    used_ids: set[str] = set()
+    for nids in candidates.values():
+        used_ids.update(nids)
+    return [node_map[nid] for nid in used_ids if nid in node_map]
+
+
 def _build_matching_prompt(
     atoms: list[EditAtom],
     canvas_nodes: list[CanvasNode],
+    atom_candidates: dict[str, list[str]] | None = None,
 ) -> str:
     atoms_json = json.dumps([
         {
@@ -56,6 +115,7 @@ def _build_matching_prompt(
                  "original": l.original, "rewritten": l.rewritten}
                 for l in a.rewritten_lines
             ],
+            "candidates": atom_candidates.get(a.atom_id, [])[:8] if atom_candidates else [],
         }
         for a in atoms
     ], ensure_ascii=False, indent=2)
@@ -84,6 +144,8 @@ scene/environment/action described.
 ```
 
 ## Rules
+- Each atom has a "candidates" list of suggested canvas nodes from keyword matching.
+  These are hints — you may match to any node, not just candidates.
 - Prefer dialogue match over scene keyword match.
 - If no node reasonably matches an atom, put it in unmatched.
 - Every atom must appear in either matches or unmatched.
@@ -208,6 +270,33 @@ def _coerce_window_drafts(raw_drafts: list[dict], atoms: list[EditAtom]) -> list
     return drafts
 
 
+def _propagate_adjacent_matches(atoms: list[EditAtom]) -> None:
+    """If an unmatched atom is adjacent to matched atoms sharing a node, propagate."""
+    sorted_atoms = sorted(atoms, key=lambda a: (a.primary_shot_number, a.start_sec))
+    
+    for i, atom in enumerate(sorted_atoms):
+        if atom.matched_node_id:
+            continue
+        # Check previous and next atoms
+        for neighbor_idx in [i-1, i+1]:
+            if 0 <= neighbor_idx < len(sorted_atoms):
+                neighbor = sorted_atoms[neighbor_idx]
+                if neighbor.matched_node_id:
+                    # Check if same shot or consecutive shots with shared speakers
+                    same_shot = atom.primary_shot_number == neighbor.primary_shot_number
+                    consecutive_shot = abs(atom.primary_shot_number - neighbor.primary_shot_number) == 1
+                    
+                    atom_speakers = {l.speaker for l in atom.rewritten_lines}
+                    neighbor_speakers = {l.speaker for l in neighbor.rewritten_lines}
+                    shared_speakers = bool(atom_speakers & neighbor_speakers)
+                    
+                    if same_shot or (consecutive_shot and shared_speakers):
+                        atom.matched_node_id = neighbor.matched_node_id
+                        atom.match_confidence = neighbor.match_confidence * 0.7 if neighbor.match_confidence else 0.5
+                        atom.match_reasoning = f"propagated_from_{neighbor.atom_id}_adjacent_match"
+                        break
+
+
 def match_atoms_to_nodes(
     atoms: list[EditAtom],
     canvas_nodes: list[CanvasNode],
@@ -216,12 +305,16 @@ def match_atoms_to_nodes(
     if not atoms:
         return []
 
+    # Coarse recall: deterministic keyword matching → candidate nodes
+    atom_candidates = _coarse_recall(atoms, canvas_nodes)
+    candidate_nodes = _filter_canvas_nodes(atom_candidates, canvas_nodes)
+
     client = _get_client()
     if not client:
         logger.warning("No LLM client available")
         return []
 
-    prompt = _build_matching_prompt(atoms, canvas_nodes)
+    prompt = _build_matching_prompt(atoms, candidate_nodes, atom_candidates)
     model = os.environ.get("LLM_PLANNER_MODEL", _DEFAULT_MODEL)
 
     t0 = time.time()
@@ -253,6 +346,9 @@ def match_atoms_to_nodes(
             atom.match_reasoning = m.get("reasoning", "")
         elif atom.atom_id not in unmatched_ids:
             logger.warning("Atom %s missing from LLM response", atom.atom_id)
+
+    # Post-processing: propagate matches to adjacent unmatched atoms
+    _propagate_adjacent_matches(atoms)
 
     matched_count = sum(1 for a in atoms if a.matched_node_id)
     drafts = _coerce_window_drafts(raw_drafts, atoms)
